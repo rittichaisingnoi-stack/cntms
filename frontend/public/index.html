@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>NEO REPORT CN · ระบบจัดการ Order CN</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <!-- LOGIN GATE -->
+  <div id="login" class="login hidden">
+    <form class="login-box card" id="login-form">
+      <div class="brand center"><span class="neo">NEO</span> <span>REPORT CN</span></div>
+      <p class="hint center">ระบบจัดการ Order CN · คืนสินค้า RG</p>
+      <input id="login-user" class="in" placeholder="ชื่อผู้ใช้" autocomplete="username" />
+      <input id="login-pass" type="password" class="in" placeholder="รหัสผ่าน" autocomplete="current-password" />
+      <button type="submit" class="btn primary">เข้าสู่ระบบ</button>
+      <div id="login-err" class="err"></div>
+    </form>
+  </div>
+
+  <!-- APP -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand"><span class="neo">NEO</span> <span id="app-title">REPORT CN</span></div>
+      <div class="topbar-right">
+        <span id="who" class="who"></span>
+        <button id="chpass" class="btn ghost">เปลี่ยนรหัสผ่าน</button>
+        <button id="logout" class="btn ghost">ออกจากระบบ</button>
+      </div>
+    </header>
+    <nav class="tabs" id="tabs"></nav>
+    <main id="main"></main>
+  </div>
+
+  <!-- DETAIL MODAL -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <button class="close" id="modal-close">✕</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/qrcode.js"></script>
+  <script src="/qr.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

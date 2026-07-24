@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: cntms
+    runtime: node
+    plan: free            # เปลี่ยนเป็น starter ($7) เพื่อตัด cold start
+    region: singapore     # ใกล้ไทยที่สุด
+    buildCommand: npm run render-build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: SUPABASE_URL
+        sync: false        # ใส่ค่าเองในหน้า Render dashboard
+      - key: SUPABASE_SERVICE_KEY
+        sync: false        # ใส่ค่าเองในหน้า Render dashboard
