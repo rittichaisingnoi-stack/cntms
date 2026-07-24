@@ -9,7 +9,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
       - key: SUPABASE_URL
         sync: false        # ใส่ค่าเองในหน้า Render dashboard
       - key: SUPABASE_SERVICE_KEY

@@ -12,7 +12,7 @@
     "render-build": "npm install && npm --prefix backend install --omit=dev"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
