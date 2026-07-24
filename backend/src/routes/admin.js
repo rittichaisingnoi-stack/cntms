@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import xlsx from 'xlsx';
 import { supabase } from '../lib/supabase.js';
 import { requireRole } from '../lib/auth.js';
 import { RULE_FIELDS, autoAssignPending } from '../lib/areaRules.js';
@@ -193,6 +194,104 @@ router.put('/kpi-limits', async (req, res) => {
     .upsert({ key: 'kpi_limits', value: limits, updated_at: new Date().toISOString() }, { onConflict: 'key' });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true, ...limits });
+});
+
+// ---- Archive: order ที่ปิดงานแล้ว + เก่ากว่า 6 เดือน ----
+// flow: (1) count เตือนในแบนเนอร์ → (2) download Excel ลงเครื่อง → (3) delete หลังกดยืนยัน
+const ARCHIVE_MONTHS = 6;
+
+// วันตัด: completed_date < วันนี้ - 6 เดือน (คืน 'YYYY-MM-DD')
+function archiveCutoff() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - ARCHIVE_MONTHS);
+  return d.toISOString().slice(0, 10);
+}
+
+// ดึง rg_no ของ order ที่เข้าเกณฑ์ archive (completed + เก่ากว่า cutoff, ต้องมี completed_date จริง)
+async function findArchivable() {
+  const cutoff = archiveCutoff();
+  const { data, error } = await supabase
+    .from('rg_headers')
+    .select('rg_no, completed_date')
+    .eq('status', 'completed')
+    .not('completed_date', 'is', null)
+    .lt('completed_date', cutoff)
+    .order('completed_date');
+  if (error) throw new Error(error.message);
+  return { cutoff, rows: data || [] };
+}
+
+// GET /api/admin/archive/count — สำหรับแบนเนอร์แจ้งเตือน
+router.get('/archive/count', async (_req, res) => {
+  try {
+    const { cutoff, rows } = await findArchivable();
+    res.json({ count: rows.length, cutoff, months: ARCHIVE_MONTHS });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/admin/archive/download — สร้าง Excel 3 sheet (headers/items/tracking) แล้วส่งลงเครื่อง
+// ไม่ลบข้อมูล — การลบทำผ่าน DELETE /archive หลังผู้ใช้กดยืนยันอีกครั้ง
+router.get('/archive/download', async (_req, res) => {
+  try {
+    const { rows } = await findArchivable();
+    if (!rows.length) return res.status(400).json({ error: 'ไม่มีออเดอร์ที่เข้าเกณฑ์ archive' });
+    const rgNos = rows.map((r) => r.rg_no);
+
+    // Supabase .in() จำกัดจำนวนได้ — แบ่ง chunk กัน URL/query ยาวเกิน
+    const chunk = (arr, n) => { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+    const fetchAll = async (table, col) => {
+      const out = [];
+      for (const part of chunk(rgNos, 200)) {
+        const { data, error } = await supabase.from(table).select('*').in(col, part);
+        if (error) throw new Error(error.message);
+        out.push(...(data || []));
+      }
+      return out;
+    };
+
+    const headers = await fetchAll('rg_headers', 'rg_no');
+    const items = await fetchAll('rg_items', 'rg_no');
+    const tracking = await fetchAll('order_tracking', 'rg_no');
+
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, xlsx.utils.json_to_sheet(headers), 'Orders');
+    xlsx.utils.book_append_sheet(wb, xlsx.utils.json_to_sheet(items.length ? items : [{}]), 'Items');
+    xlsx.utils.book_append_sheet(wb, xlsx.utils.json_to_sheet(tracking.length ? tracking : [{}]), 'Tracking');
+    const buf = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="archive-${stamp}.xlsx"`);
+    res.end(buf);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/admin/archive — ลบ order ที่เข้าเกณฑ์ (ขั้นยืนยันหลังดาวน์โหลด)
+// re-query เกณฑ์เดิมสดๆ ไม่รับ list จาก client กันลบผิดตัว
+router.delete('/archive', async (_req, res) => {
+  try {
+    const { rows } = await findArchivable();
+    if (!rows.length) return res.json({ deleted: 0 });
+    const rgNos = rows.map((r) => r.rg_no);
+    const chunk = (arr, n) => { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+
+    // ลบ items ก่อน (ไม่มี FK cascade), order_tracking มี on delete cascade ผ่าน rg_headers อยู่แล้ว
+    for (const part of chunk(rgNos, 200)) {
+      const del = await supabase.from('rg_items').delete().in('rg_no', part);
+      if (del.error) throw new Error(del.error.message);
+    }
+    for (const part of chunk(rgNos, 200)) {
+      const del = await supabase.from('rg_headers').delete().in('rg_no', part);
+      if (del.error) throw new Error(del.error.message);
+    }
+    res.json({ deleted: rgNos.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 export default router;

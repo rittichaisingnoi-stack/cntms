@@ -1701,6 +1701,54 @@ function renderShell() {
     tabs.appendChild(b);
   });
   if (items[0]) show(items[0]);
+  checkArchiveBanner();
+}
+
+// ---------- Archive banner (Supervisor เท่านั้น) ----------
+// เตือนเมื่อมี order ปิดงาน + เก่ากว่า 6 เดือน → ดาวน์โหลด → ยืนยันลบ 2 ขั้น
+async function checkArchiveBanner() {
+  const box = $('#archive-banner');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!['supervisor', 'admin'].includes(me.role)) return;
+  let info;
+  try { info = await api('/admin/archive/count'); } catch { return; }
+  if (!info || !info.count) return; // ไม่มีอะไรต้อง archive — แบนเนอร์หายเอง
+
+  const bar = el(`<div class="archive-bar">
+    <span class="ab-msg">🗄️ มี <b>${info.count}</b> ออเดอร์ที่ปิดงานเกิน ${info.months} เดือน (ก่อน ${info.cutoff}) พร้อม Archive</span>
+    <span class="ab-actions">
+      <button class="btn ghost" id="ab-dl">⬇️ ดาวน์โหลด Excel</button>
+      <button class="btn red hidden" id="ab-del">🗑️ ยืนยันลบข้อมูล (${info.count})</button>
+    </span>
+  </div>`);
+  box.appendChild(bar);
+
+  const dlBtn = $('#ab-dl', bar);
+  const delBtn = $('#ab-del', bar);
+
+  dlBtn.onclick = () => {
+    // ดาวน์โหลดไฟล์ลงเครื่องผ่าน token ใน query (endpoint เป็น GET)
+    window.open(withToken('/api/admin/archive/download'), '_blank');
+    // เปิดปุ่มลบขั้นที่ 2 หลังสั่งดาวน์โหลด
+    dlBtn.textContent = '⬇️ ดาวน์โหลดอีกครั้ง';
+    delBtn.classList.remove('hidden');
+    toast('ดาวน์โหลดแล้ว — ตรวจไฟล์ให้ครบก่อนกดยืนยันลบ');
+  };
+
+  delBtn.onclick = async () => {
+    if (!confirm(`ยืนยันลบ ${info.count} ออเดอร์ออกจากระบบถาวร?\nโปรดแน่ใจว่าดาวน์โหลดไฟล์ Excel เก็บไว้แล้ว — ข้อมูลที่ลบเอาคืนไม่ได้`)) return;
+    delBtn.disabled = true;
+    try {
+      const r = await api('/admin/archive', { method: 'DELETE' });
+      toast(`ลบแล้ว ${r.deleted} ออเดอร์`);
+      checkArchiveBanner();      // เช็คใหม่ — ถ้าหมดแล้วแบนเนอร์หาย
+      reloadActive();            // รีเฟรชหน้าปัจจุบันให้ตัวเลขตรง (ถ้าหน้ารองรับ)
+    } catch (e) {
+      alert('ลบไม่สำเร็จ: ' + e.message);
+      delBtn.disabled = false;
+    }
+  };
 }
 
 function show(view) {
