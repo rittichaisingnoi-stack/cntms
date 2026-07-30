@@ -300,7 +300,7 @@ VIEWS.myjobs = {
       <div class="card">
         <div class="jfilters">
           <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
-            <input id="jsearch" class="in" placeholder="เช่น บางรัก ซีเจ, 010011 — RG/Sold To Code/ร้านค้า/อำเภอ/จังหวัด"/></label>
+            <input id="jsearch" class="in" placeholder="เช่น 116069, บางปะกง — RG/เขต/Sold To Code/Ship To/ร้านค้า/อำเภอ/จังหวัด/Region/WH/เหตุผล"/></label>
           <label class="jf"><span>สถานะ</span>
             <select id="jstatus" class="in"><option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
           <label class="jf"><span>จัดกลุ่มตาม</span>
@@ -671,7 +671,7 @@ VIEWS.grlist = {
     filters: (reload) => {
       const f = el(`<div class="jfilters">
         <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
-          <input id="gq" class="in" placeholder="เช่น บางรัก ซีเจ, 010011 — RG/Sold To Code/ร้านค้า/อำเภอ/จังหวัด"/></label>
+          <input id="gq" class="in" placeholder="เช่น 116069, บางปะกง — RG/เขต/Sold To Code/Ship To/ร้านค้า/อำเภอ/จังหวัด/Region/WH/เหตุผล"/></label>
         <label class="jf"><span>สถานะ</span>
           <select id="gstatus" class="in"><option value="returned,gr_received" selected>ยังไม่ปิดงาน (กลับคลัง + รับเข้าระบบ)</option>
             <option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
@@ -787,7 +787,7 @@ VIEWS.orders = {
     filters: (reload) => {
       const f = el(`<div class="jfilters">
         <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
-          <input id="fq" class="in" placeholder="เช่น บางรัก ซีเจ, 010011 — RG/Sold To Code/ร้านค้า/อำเภอ/จังหวัด"/></label>
+          <input id="fq" class="in" placeholder="เช่น 116069, บางปะกง — RG/เขต/Sold To Code/Ship To/ร้านค้า/อำเภอ/จังหวัด/Region/WH/เหตุผล"/></label>
         <label class="jf"><span>สถานะ</span>
           <select id="fstatus" class="in"><option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
         <label class="jf"><span>พื้นที่</span>
@@ -1316,7 +1316,7 @@ VIEWS.unassigned = {
         <div id="ureout" class="hint"></div>
         <div class="jfilters" style="margin-top:10px">
           <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
-            <input id="usearch" class="in" placeholder="เช่น บางรัก ซีเจ, 010011 — RG/Sold To Code/ร้านค้า/อำเภอ/จังหวัด"/></label>
+            <input id="usearch" class="in" placeholder="เช่น 116069, บางปะกง — RG/เขต/Sold To Code/Ship To/ร้านค้า/อำเภอ/จังหวัด/Region/WH/เหตุผล"/></label>
           <label class="jf"><span>จัดกลุ่มตาม</span>
             <select id="ugrpby" class="in">${GROUP_FIELDS.map((g) => `<option value="${g.key}">${g.label}</option>`).join('')}</select></label>
           <label class="jf jf-chk"><span>ตัวกรอง</span>

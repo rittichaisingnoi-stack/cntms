@@ -1,7 +1,11 @@
 // ค้นหาออเดอร์ — ใช้ร่วมกันทุก route (ตาราง/Export) เพื่อให้ผลลัพธ์ตรงกันเสมอ
 //   คั่นด้วย , = OR ระหว่างกลุ่ม · เว้นวรรคในกลุ่ม = AND
-//   แต่ละคำค้นในคอลัมน์: เลขที่ RG / Sold To Code / ร้านค้า / อำเภอ / จังหวัด (OR กัน)
-export const SEARCH_COLS = ['rg_no', 'sold_to_code', 'sold_to_name', 'district', 'province'];
+//   ค้นได้ทุกคอลัมน์ที่ผู้ใช้เห็นในตาราง: เลขที่ RG / เขต / Sold To Code / Ship To (sold_to) /
+//   Ship To Code / ร้านค้า / ที่อยู่ส่ง / อำเภอ / จังหวัด / Region / WH / เหตุผล / หมายเลขอ้างอิง
+export const SEARCH_COLS = [
+  'rg_no', 'zone', 'sold_to_code', 'sold_to', 'ship_to_code', 'sold_to_name', 'ship_to_name',
+  'district', 'province', 'region', 'wh_code', 'reason_text', 'reference',
+];
 
 export function applySearch(query, q) {
   if (!q || !q.trim()) return query;
