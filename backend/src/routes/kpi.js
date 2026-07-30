@@ -16,8 +16,11 @@ const days = (a, b) => {
   if (isNaN(da) || isNaN(db)) return null;
   return Math.round((db - da) / DAY);
 };
+// Vendor คีย์ย้อนหลังได้ → วันรับสินค้าอาจอยู่ก่อนวันมอบหมาย ทำให้ d1 ติดลบ
+//   เคสนี้คือไปรับของก่อนที่ออเดอร์จะเข้าระบบ นับเป็น 0 วัน (ไม่ใช่ค่าลบที่จะดึงค่าเฉลี่ยเพี้ยน)
+const nonNeg = (v) => (v == null ? null : Math.max(0, v));
 const kpiOf = (r) => ({
-  d1: days(r.assigned_at, r.received_date),
+  d1: nonNeg(days(r.assigned_at, r.received_date)),
   d2: days(r.received_date, r.returned_date),
   d3: days(r.received_date, r.completed_date),
 });

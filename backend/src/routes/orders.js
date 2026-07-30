@@ -183,8 +183,10 @@ function vendorStatus(order, { received_date, returned_date }) {
 const todayTH = () => new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
 
 // ตรวจลำดับวันที่ให้สมเหตุสมผล — ผสมค่าใหม่ที่กำลังบันทึกกับค่าเดิมในฐานข้อมูล
-//   กติกา: รับสินค้า ≥ มอบหมาย · กลับคลัง ≥ รับสินค้า  (เท่ากันได้)
-//          และห้ามกรอกวันล่วงหน้า (ทำเสร็จแล้วค่อยกรอก)
+//   กติกา: กลับคลัง ≥ รับสินค้า (เท่ากันได้) · ห้ามกรอกวันล่วงหน้า (ทำเสร็จแล้วค่อยกรอก)
+//   ไม่บังคับ "รับสินค้า ≥ วันมอบหมาย" — Vendor คีย์ย้อนหลังได้
+//     เพราะของจริงมักไปรับก่อน แล้วออเดอร์เพิ่งถูก upload/มอบหมายเข้าระบบทีหลัง
+//     (KPI ช่วง 1 จะติดลบได้ในเคสนี้ ถือว่าปกติ = ทำงานก่อนออเดอร์เข้าระบบ)
 //   คืนข้อความ error ถ้าผิดกติกา · คืน null ถ้าผ่าน
 function dateOrderError(order, { received_date, returned_date }) {
   const day = (d) => (d ? String(d).slice(0, 10) : null); // เทียบเฉพาะวันที่ (yyyy-mm-dd)
@@ -194,10 +196,8 @@ function dateOrderError(order, { received_date, returned_date }) {
   if (newRec && newRec > today) return `วันที่รับสินค้า (${newRec}) เป็นวันล่วงหน้า — กรอกได้เมื่อทำเสร็จแล้ว`;
   if (newRet && newRet > today) return `วันกลับคลัง (${newRet}) เป็นวันล่วงหน้า — กรอกได้เมื่อทำเสร็จแล้ว`;
 
-  const assigned = day(order.assigned_at);
   const rec = day(received_date ?? order.received_date);
   const ret = day(returned_date ?? order.returned_date);
-  if (rec && assigned && rec < assigned) return `วันที่รับสินค้า (${rec}) ก่อนวันมอบหมาย (${assigned})`;
   if (ret && rec && ret < rec) return `วันกลับคลัง (${ret}) ก่อนวันรับสินค้า (${rec})`;
   return null;
 }

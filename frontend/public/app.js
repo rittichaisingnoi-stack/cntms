@@ -517,7 +517,7 @@ VIEWS.myjobs = {
         }
         toast('บันทึกสำเร็จ · ' + msgs.join(' · '));
         if (badDates.length) openModal(`<div class="d-no">⚠️ ข้ามวันที่ผิดลำดับ ${badDates.length} ออเดอร์</div>
-          <p class="hint">กติกา: วันที่รับสินค้า ≥ วันมอบหมาย · วันกลับคลัง ≥ วันรับสินค้า</p>
+          <p class="hint">กติกา: วันกลับคลัง ≥ วันรับสินค้า · กรอกวันล่วงหน้าไม่ได้ (คีย์ย้อนหลังได้)</p>
           <ul class="err" style="margin:6px 0 0 18px">${badDates.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>`);
         clearBarInputs();
         await loadOrders();   // ล้างรายการที่เลือก + ดึงข้อมูลใหม่
