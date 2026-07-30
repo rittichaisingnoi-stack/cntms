@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import xlsx from 'xlsx';
 import { supabase } from '../lib/supabase.js';
 import { parseWorkbook } from '../lib/importExcel.js';
 import { REASON_MAP } from '../lib/reasons.js';
@@ -11,6 +12,27 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 // GET /api/rg/reasons — reason code lookup for filters
 router.get('/reasons', (_req, res) => {
   res.json(Object.entries(REASON_MAP).map(([code, text]) => ({ code, text })));
+});
+
+// POST /api/rg/debug-columns — ตรวจว่าไฟล์จริงมีหัวตารางอะไร และคอลัมน์ L มีค่าอะไร
+//   ใช้ไล่ปัญหา mapping คอลัมน์ (ไม่บันทึกอะไรลง DB)
+router.post('/debug-columns', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'ไม่พบไฟล์' });
+  try {
+    const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+    const hi = rows.findIndex((r) => r.some((c) => /Sold To Code/i.test(String(c ?? ''))));
+    const colLetter = (i) => String.fromCharCode(65 + i);
+    res.json({
+      sheet: wb.SheetNames[0],
+      header_row_index: hi,
+      headers: hi < 0 ? null : rows[hi].map((c, i) => ({ col: colLetter(i), idx: i, label: String(c ?? '') })),
+      sample_rows: rows.slice(hi + 1, hi + 4).map((r) => r.map((c, i) => ({ col: colLetter(i), value: c }))),
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // POST /api/rg/parse — อ่านไฟล์แล้วส่งข้อมูลกลับให้ preview/แก้ไข "โดยยังไม่บันทึก"
