@@ -133,8 +133,7 @@ function parseSummary(rows) {
     zone: findCol([/^เขต$/, /^zone$/], 0),
     rg_no: findCol([/เลขที่ rg/, /^rg no/], 1),
     sold_to_code: findCol([/^sold to code$/], 2),
-    // "Sold To" (เดี่ยวๆ ท้ายรายงาน) = รหัสลูกค้า ใช้จับคู่ Vendor; "Sold To Name" = ชื่อร้าน
-    // บางรายงานสองคอลัมน์นี้สลับกัน → ตอนอ่านรายแถวจะเลือกฝั่งที่เป็นตัวเลขเข้า sold_to
+    // "Sold To" (เดี่ยวๆ ท้ายรายงาน = คอลัมน์ L) → แสดงเป็น "Ship To" ในระบบ ใช้จับคู่ Vendor
     sold_to: findCol([/^sold to$/], 11),
     sold_to_name: findCol([/^sold to name$/], 3),
     ship_to_code: findCol([/^ship to code$/], 4),
@@ -157,11 +156,11 @@ function parseSummary(rows) {
     if (!/^\d{3}-\d{4}-\d{4,}$/.test(rgNo)) continue; // valid RG number pattern
     const rn = parseReasonNote(r[C.note]);
     const addr = parseAddress(r[C.ship_to_name]);
-    // sold_to = รหัสลูกค้า (ตัวเลข), sold_to_name = ชื่อร้าน — สลับให้ถ้ารายงานเรียงคอลัมน์กลับกัน
-    const isCode = (s) => /^\d+$/.test(s);
-    let soldTo = String(r[C.sold_to] ?? '').trim();
-    let soldToName = String(r[C.sold_to_name] ?? '').trim();
-    if (!isCode(soldTo) && isCode(soldToName)) [soldTo, soldToName] = [soldToName, soldTo];
+    // sold_to = คอลัมน์ L "Sold To" ในไฟล์ (ใช้เป็น Ship To/ปลายทาง ในระบบ)
+    //   หาจากชื่อหัวตารางก่อน ไม่เจอค่อย fallback ไป index 11 (= คอลัมน์ L)
+    //   ห้ามสลับกับ sold_to_name อัตโนมัติ — ค่าจากคอลัมน์ L ต้องเข้า sold_to ตรงๆ เสมอ
+    const soldTo = String(r[C.sold_to] ?? '').trim();
+    const soldToName = String(r[C.sold_to_name] ?? '').trim();
     // พื้นที่: ใช้ค่าจากคอลัมน์ในไฟล์ก่อน (ตรงต้นฉบับ) — ไม่มีค่อย fallback ไปแกะจากที่อยู่
     const district = cell(r, C.district) || addr.district;
     const province = cell(r, C.province) || addr.province;
