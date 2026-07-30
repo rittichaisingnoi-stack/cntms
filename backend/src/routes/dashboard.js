@@ -5,7 +5,7 @@ import { applySearch } from '../lib/search.js';
 
 const router = Router();
 
-const STATUSES = ['pending', 'assigned_vendor', 'received', 'returned', 'completed'];
+const STATUSES = ['pending', 'assigned_vendor', 'received', 'returned', 'gr_received', 'completed'];
 
 // จำกัด scope ตาม role เหมือน /api/orders — vendor เห็นเฉพาะงานตัวเอง
 function scope(query, user) {
@@ -39,7 +39,11 @@ router.get('/export', async (req, res) => {
   const { from, to, status, area, q: search } = req.query;
   let q = supabase.from('rg_headers').select('*');
   q = scope(q, req.user);
-  if (status) q = q.eq('status', status);
+  // status รับได้ทั้งค่าเดียว และหลายค่าคั่นด้วย comma (ให้ตรงกับ filter หน้าออเดอร์)
+  if (status) {
+    const list = String(status).split(',').map((s) => s.trim()).filter(Boolean);
+    q = list.length > 1 ? q.in('status', list) : q.eq('status', list[0] || status);
+  }
   if (area && area.trim()) q = q.ilike('area', `%${area.trim()}%`);
   q = applySearch(q, search);
   if (from) q = q.gte('rg_date', from);
@@ -55,20 +59,24 @@ router.get('/export', async (req, res) => {
   const userIds = new Set();
   for (const r of orders) { if (r.vendor_id) userIds.add(r.vendor_id); if (r.admin_id) userIds.add(r.admin_id); }
 
-  // --- ผู้ทำแต่ละขั้นจาก order_tracking (received/returned/completed) ---
-  //     เก็บ action_by ล่าสุดต่อ (rg_no, status)
-  const actorBy = new Map(); // `${rg_no}|${status}` -> action_by(userId)
+  // --- ผู้ทำ + เวลาที่คีย์แต่ละขั้นจาก order_tracking ---
+  //     เก็บ action_by / created_at ล่าสุดต่อ (rg_no, status)
+  //     คอลัมน์ received_date/returned_date/gr_received_date/completed_date เป็นชนิด date (ไม่มีเวลา)
+  //     เวลาที่แสดงในรายงานจึงมาจาก created_at ของ tracking = เวลาที่บันทึกเข้าระบบ
+  const actorBy = new Map();   // `${rg_no}|${status}` -> action_by(userId)
+  const stampAt = new Map();   // `${rg_no}|${status}` -> created_at (timestamptz)
   const rgNos = orders.map((r) => r.rg_no);
   if (rgNos.length) {
     const { data: tracks } = await supabase
       .from('order_tracking')
       .select('rg_no, status, action_by, created_at')
       .in('rg_no', rgNos)
-      .in('status', ['received', 'returned', 'completed'])
+      .in('status', ['received', 'returned', 'gr_received', 'completed'])
       .order('created_at', { ascending: true });
     for (const t of tracks || []) {
+      stampAt.set(`${t.rg_no}|${t.status}`, t.created_at); // แถวหลังสุด (ล่าสุด) ทับ
       if (t.action_by == null) continue;
-      actorBy.set(`${t.rg_no}|${t.status}`, t.action_by); // แถวหลังสุด (ล่าสุด) ทับ
+      actorBy.set(`${t.rg_no}|${t.status}`, t.action_by);
       userIds.add(t.action_by);
     }
   }
@@ -82,12 +90,35 @@ router.get('/export', async (req, res) => {
   const nameOf = (id) => (id != null ? (userName.get(id) || `#${id}`) : '');
   const actor = (rg, st) => nameOf(actorBy.get(`${rg}|${st}`));
 
+  const p2 = (n) => String(n).padStart(2, '0');
+  // 'DD/MM/YYYY HH:MM' ตามเวลาไทย (UTC+7) จาก timestamptz
+  const fmtTS = (ts) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d)) return String(ts);
+    const t = new Date(d.getTime() + 7 * 3600000); // เทียบเป็นเวลาไทยแล้วอ่านค่าแบบ UTC
+    return `${p2(t.getUTCDate())}/${p2(t.getUTCMonth() + 1)}/${t.getUTCFullYear()} ${p2(t.getUTCHours())}:${p2(t.getUTCMinutes())}`;
+  };
+  // 'DD/MM/YYYY' จากคอลัมน์ชนิด date ('YYYY-MM-DD')
+  const fmtD = (v) => {
+    const [y, m, d] = String(v).slice(0, 10).split('-');
+    return y && m && d ? `${d}/${m}/${y}` : String(v);
+  };
+  // คอลัมน์วันที่ (ชนิด date) + เวลาที่คีย์เข้าระบบจาก tracking — ไม่มี tracking ก็แสดงแค่วันที่
+  const dateTime = (dateVal, rg, st) => {
+    if (!dateVal) return '';
+    const ts = stampAt.get(`${rg}|${st}`);
+    if (!ts) return fmtD(dateVal);
+    return `${fmtD(dateVal)} ${fmtTS(ts).slice(11)}`; // วันที่ที่บันทึก + เวลาที่คีย์
+  };
+
   const rows = orders.map((r) => ({
     'เลขที่ RG': r.rg_no,
     'หมายเลขอ้างอิง': r.reference,
     'สถานะ': r.status,
     'ร้านค้า': r.sold_to_name,
     'Sold To Code': r.sold_to_code,
+    'Ship To': r.sold_to,          // รหัสปลายทางที่ใช้จับคู่ Vendor (คอลัมน์ "Sold To" ในรายงานต้นฉบับ)
     'Ship To Code': r.ship_to_code,
     'อำเภอ': r.district,
     'จังหวัด': r.province,
@@ -98,14 +129,17 @@ router.get('/export', async (req, res) => {
     'ชิ้น': r.qty_pieces,
     'WH': r.wh_code,
     'เหตุผล': r.reason_text,
-    'วันที่พิมพ์': r.rg_date,
-    'วันที่มอบหมาย': r.assigned_at ? String(r.assigned_at).slice(0, 10) : '',
+    'วันที่พิมพ์': r.rg_date ? fmtD(r.rg_date) : '',   // ไม่มีเวลาในต้นทาง (มาจากรายงาน RG)
+    'วันที่มอบหมาย': fmtTS(r.assigned_at),   // timestamptz — มีเวลาจริงอยู่แล้ว
     'User Assign': nameOf(r.admin_id),
-    'วันที่รับ': r.received_date,
+    'วันที่รับ': dateTime(r.received_date, r.rg_no, 'received'),
     'User RCV': actor(r.rg_no, 'received'),
-    'วันที่กลับคลัง': r.returned_date,
+    'วันที่กลับคลัง': dateTime(r.returned_date, r.rg_no, 'returned'),
     'User Return': actor(r.rg_no, 'returned'),
-    'วันที่ปิดงาน': r.completed_date,
+    'วันที่ WH RCV': dateTime(r.gr_received_date, r.rg_no, 'gr_received'),
+    'User WH RCV': actor(r.rg_no, 'gr_received'),
+    'Remark (คลัง)': r.gr_remark,
+    'วันที่ปิดงาน': dateTime(r.completed_date, r.rg_no, 'completed'),
     'User Close': actor(r.rg_no, 'completed'),
     'Doc. WH': r.doc_wh,
     'Remark': r.reason_note,

@@ -28,7 +28,9 @@ const withToken = (url) => url + (url.includes('?') ? '&' : '?') + 'token=' + en
 // ---------- status labels ----------
 const STATUS = {
   pending: 'รอจัดพื้นที่', assigned_vendor: 'มอบหมายแล้ว',
-  received: 'รับสินค้าแล้ว', returned: 'นำกลับคลังแล้ว', completed: 'ปิดงาน',
+  received: 'รับสินค้าแล้ว', returned: 'นำกลับคลังแล้ว',
+  gr_received: 'รับสินค้าเข้าระบบ',   // GR upload แล้วมี Remark — ยังไม่ปิดงาน
+  completed: 'ปิดงาน',
 };
 const statusChip = (s) => `<span class="chip st st-${s}">${STATUS[s] || s || 'รอดำเนินการ'}</span>`;
 
@@ -41,6 +43,21 @@ async function loadNoteCategories() {
     const list = await api('/lookup/note-categories');
     if (Array.isArray(list) && list.length) NOTE_CATEGORIES = list;
   } catch { /* ใช้ค่าเริ่มต้น */ }
+}
+
+// Sold To Code ที่ซ่อนเป็นค่าเริ่มต้นในหน้า "ออเดอร์รอจัดพื้นที่" (ติ๊กออกเพื่อดูได้)
+const HIDE_SOLD_TO_CODE = '011606';
+
+// ---------- Vendor list ที่ใช้ร่วมกันทุกหน้า ----------
+// order.vendor_id → users.id · แคชครั้งเดียวเพื่อแสดง "ชื่อ Vendor" ในตารางโดยไม่ต้อง join ฝั่ง API
+let VENDOR_LIST = [];
+const vendorLabel = (id) => {
+  if (!id) return null;
+  return VENDOR_LIST.find((v) => v.id === id)?.display_name || `#${id}`;
+};
+async function loadVendorList() {
+  try { VENDOR_LIST = await api('/lookup/vendors') || []; } catch { VENDOR_LIST = []; }
+  return VENDOR_LIST;
 }
 
 // โหลดเกณฑ์ KPI (threshold 3 ช่วง) จาก DB — เรียกตอน login
@@ -163,7 +180,7 @@ VIEWS.import = {
         html += `<div class="alert-banner">🔔 พบร้านใหม่ที่ยังไม่มีในกติกา ${r.new_shops.length} ร้าน —
           ไปที่แท็บ "กติกาจัดพื้นที่" เพื่อเพิ่ม แล้วกด Re-assign หรือ assign มือที่แท็บ "รอจัดพื้นที่"</div>
           <div class="table-scroll"><table class="otable"><thead><tr>
-          <th>Ship To Code</th><th>Sold To</th><th>Sold To Code</th><th>เขต</th><th>ชื่อร้าน</th>
+          <th>Ship To Code</th><th>Ship To</th><th>Sold To Code</th><th>เขต</th><th>ชื่อร้าน</th>
           </tr></thead><tbody>${r.new_shops.map((n) => `<tr>
             <td>${esc(n.ship_to_code || '-')}</td><td>${esc(n.sold_to || '-')}</td>
             <td>${esc(n.sold_to_code || '-')}</td><td>${esc(n.zone || '-')}</td>
@@ -213,7 +230,7 @@ VIEWS.import = {
     function renderEditForm(headers) {
       const cols = [
         ['rg_no', 'เลขที่ RG', 120], ['zone', 'เขต', 70], ['sold_to_code', 'Sold To Code', 95],
-        ['ship_to_code', 'Ship To Code', 95], ['sold_to_name', 'ชื่อร้าน (Sold To)', 200],
+        ['ship_to_code', 'Ship To Code', 95], ['sold_to', 'Ship To', 95], ['sold_to_name', 'ชื่อร้าน (Sold To)', 200],
         ['qty_boxes', 'กล่อง', 60], ['qty_pieces', 'ชิ้น', 60],
         ['district', 'อำเภอ', 110], ['province', 'จังหวัด', 110], ['region', 'Region', 90],
         ['wh_code', 'WH', 70], ['reason_text', 'เหตุผล', 150],
@@ -303,13 +320,15 @@ VIEWS.myjobs = {
     </div>
     <div class="assign-bar hidden" id="jbar">
       <span id="jcount" class="acount">0</span>
-      <input id="jbar-recv-date" type="date" class="in" max="${todayStr()}" title="วันที่รับสินค้าจริง (กรอกวันล่วงหน้าไม่ได้)"/>
-      <button class="btn primary" id="jbar-recv">บันทึกวันที่รับ</button>
-      <input id="jbar-ret-date" type="date" class="in" max="${todayStr()}" title="วันนำสินค้ากลับคืนคลังจริง (กรอกวันล่วงหน้าไม่ได้)"/>
-      <button class="btn red" id="jbar-ret">บันทึกวันกลับคลัง</button>
-      <select id="jbar-cat" class="in" title="หมวด">${['<option value="">— เลือกหมวด —</option>'].concat(NOTE_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)).join('')}</select>
-      <input id="jbar-rea" class="in" placeholder="เหตุผล (เลือกหมวดแล้วต้องกรอก)" title="เหตุผล"/>
-      <button class="btn primary" id="jbar-note">บันทึกหมวด+เหตุผล</button>
+      <label class="jbar-f"><span>วันที่รับ</span>
+        <input id="jbar-recv-date" type="date" class="in" max="${todayStr()}" title="วันที่รับสินค้าจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
+      <label class="jbar-f"><span>วันกลับคลัง</span>
+        <input id="jbar-ret-date" type="date" class="in" max="${todayStr()}" title="วันนำสินค้ากลับคืนคลังจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
+      <label class="jbar-f"><span>หมวด</span>
+        <select id="jbar-cat" class="in" title="หมวด">${['<option value="">— เลือกหมวด —</option>'].concat(NOTE_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)).join('')}</select></label>
+      <label class="jbar-f jbar-f-wide"><span>เหตุผล</span>
+        <input id="jbar-rea" class="in" placeholder="เลือกหมวดแล้วต้องกรอก" title="เหตุผล"/></label>
+      <button class="btn primary" id="jbar-save">💾 บันทึก</button>
     </div></div>`);
 
     let all = [], selected = new Set();
@@ -346,9 +365,9 @@ VIEWS.myjobs = {
         const tblWrap = el(`<div class="table-scroll"><table class="otable">
           <thead><tr>
             <th><input type="checkbox" class="selall" title="เลือกทั้งหมด"/></th>
-            <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To Code</th><th>Sold To</th>
+            <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th>
             <th>อำเภอ</th><th>จังหวัด</th>
-            <th class="num">กล่อง</th><th class="num">ชิ้น</th>
+            <th class="num">กล่อง</th>
             <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่มอบหมาย</th><th class="dt">วันที่รับ</th><th class="dt">วันกลับคลัง</th><th></th>
           </tr></thead><tbody></tbody></table></div>`);
         const tb = $('tbody', tblWrap);
@@ -360,12 +379,11 @@ VIEWS.myjobs = {
             <td>${statusChip(o.status)}</td>
             <td>${esc(o.zone || '-')}</td>
             <td class="code">${esc(o.sold_to_code || '-')}</td>
-            <td class="code">${esc(o.ship_to_code || '-')}</td>
+            <td class="code">${esc(o.sold_to || '-')}</td>
             <td class="l soldto">${esc(o.sold_to_name || '-')}</td>
             <td>${esc(o.district || '-')}</td>
             <td>${esc(o.province || '-')}</td>
             <td class="num">${o.qty_boxes ?? 0}</td>
-            <td class="num">${o.qty_pieces ?? 0}</td>
             ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.received_date)}${dcell(o.returned_date)}
             <td class="edit">✏️</td></tr>`);
           const cb = $('.osel', tr);
@@ -448,51 +466,64 @@ VIEWS.myjobs = {
       } catch (e) { out.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
     };
 
-    // บันทึกวันที่ ทีละหลายใบ (งานที่ปิดแล้วระบบจะไม่แก้ให้)
-    const bulkDates = async (body) => {
+    // บันทึกวันที่ ทีละหลายใบ (งานที่ปิดแล้วระบบจะไม่แก้ให้) — คืนผลให้ผู้เรียกไปรวมข้อความเอง
+    const bulkDates = async (body) => api('/orders/bulk-vendor-dates', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rg_nos: [...selected], ...body }),
+    });
+
+    // ล้างช่องกรอกกลับเป็นค่าเริ่มต้นหลังบันทึกสำเร็จ
+    const clearBarInputs = () => {
+      $('#jbar-recv-date', w).value = '';
+      $('#jbar-ret-date', w).value = '';
+      $('#jbar-cat', w).value = '';
+      const rea = $('#jbar-rea', w); rea.value = ''; rea.classList.remove('req');
+    };
+
+    // ปุ่มเดียวบันทึกทั้ง 4 ค่า — ช่องไหนไม่กรอกก็ข้ามไป ไม่ไปทับค่าเดิมในฐานข้อมูล
+    $('#jbar-save', w).onclick = async () => {
+      const recv = $('#jbar-recv-date', w).value;
+      const ret = $('#jbar-ret-date', w).value;
+      const category = $('#jbar-cat', w).value.trim();
+      const rea = $('#jbar-rea', w);
+      const reason = rea.value.trim();
+
+      if (!recv && !ret && !category && !reason) { toast('กรุณากรอกอย่างน้อย 1 ช่อง'); return; }
+      const today = todayStr();
+      if (recv && recv > today) { toast('วันที่รับ: กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
+      if (ret && ret > today) { toast('วันกลับคลัง: กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
+      // หมวด/เหตุผลต้องมาคู่กันเสมอ
+      if (reason && !category) { toast('กรุณาเลือกหมวด'); return; }
+      if (category && !reason) { rea.classList.add('req'); rea.focus(); toast('เลือกหมวดแล้วต้องกรอกเหตุผล'); return; }
+      rea.classList.remove('req');
+
+      const btn = $('#jbar-save', w); btn.disabled = true;
+      const msgs = [];
+      let badDates = [];
       try {
-        const r = await api('/orders/bulk-vendor-dates', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rg_nos: [...selected], ...body }),
-        });
-        const badDates = r.bad_dates || [];
-        toast(`บันทึก ${r.updated} รายการ`
-          + (r.locked ? ` (ข้ามงานปิดแล้ว ${r.locked})` : '')
-          + (badDates.length ? ` (ข้ามวันที่ผิดลำดับ ${badDates.length})` : ''));
+        if (recv || ret) {
+          const r = await bulkDates({ ...(recv ? { received_date: recv } : {}), ...(ret ? { returned_date: ret } : {}) });
+          badDates = r.bad_dates || [];
+          msgs.push(`วันที่ ${r.updated} รายการ`
+            + (r.locked ? ` (ข้ามงานปิดแล้ว ${r.locked})` : '')
+            + (badDates.length ? ` (ข้ามวันที่ผิดลำดับ ${badDates.length})` : ''));
+        }
+        if (category && reason) {
+          const r = await api('/orders/bulk-vendor-notes', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rg_nos: [...selected], rows: [{ category, reason }] }),
+          });
+          msgs.push(`หมวด+เหตุผล ${r.updated} รายการ` + (r.not_mine ? ` (ข้ามไม่ใช่งานคุณ ${r.not_mine})` : ''));
+        }
+        toast('บันทึกสำเร็จ · ' + msgs.join(' · '));
         if (badDates.length) openModal(`<div class="d-no">⚠️ ข้ามวันที่ผิดลำดับ ${badDates.length} ออเดอร์</div>
           <p class="hint">กติกา: วันที่รับสินค้า ≥ วันมอบหมาย · วันกลับคลัง ≥ วันรับสินค้า</p>
           <ul class="err" style="margin:6px 0 0 18px">${badDates.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>`);
-        await loadOrders();
-      } catch (e) { toast('ผิดพลาด: ' + e.message); }
-    };
-    $('#jbar-recv', w).onclick = () => {
-      const d = $('#jbar-recv-date', w).value;
-      if (!d) { toast('กรุณาเลือกวันที่รับสินค้า'); return; }
-      if (d > todayStr()) { toast('กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
-      bulkDates({ received_date: d });
-    };
-    $('#jbar-ret', w).onclick = () => {
-      const d = $('#jbar-ret-date', w).value;
-      if (!d) { toast('กรุณาเลือกวันนำสินค้ากลับคืนคลัง'); return; }
-      if (d > todayStr()) { toast('กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
-      bulkDates({ returned_date: d });
-    };
-    // บันทึกหมวด+เหตุผล ทีละหลายใบ (แทนที่ทั้งชุดเป็น 1 หมวดต่อออเดอร์ที่เลือก)
-    $('#jbar-note', w).onclick = async () => {
-      const category = $('#jbar-cat', w).value.trim();
-      const reason = $('#jbar-rea', w).value.trim();
-      const rea = $('#jbar-rea', w);
-      if (!category) { rea.classList.remove('req'); toast('กรุณาเลือกหมวด'); return; }
-      if (!reason) { rea.classList.add('req'); rea.focus(); toast('เลือกหมวดแล้วต้องกรอกเหตุผล'); return; }
-      rea.classList.remove('req');
-      try {
-        const r = await api('/orders/bulk-vendor-notes', {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rg_nos: [...selected], rows: [{ category, reason }] }),
-        });
-        toast(`บันทึกหมวด+เหตุผล ${r.updated} รายการ` + (r.not_mine ? ` (ข้ามไม่ใช่งานคุณ ${r.not_mine})` : ''));
-        $('#jbar-rea', w).value = ''; $('#jbar-cat', w).value = '';
-      } catch (e) { toast('ผิดพลาด: ' + e.message); }
+        clearBarInputs();
+        await loadOrders();   // ล้างรายการที่เลือก + ดึงข้อมูลใหม่
+      } catch (e) {
+        toast('ผิดพลาด: ' + e.message);   // ไม่ล้างช่อง — ผู้ใช้จะได้กดซ้ำได้เลย
+      } finally { btn.disabled = false; }
     };
     $('#jbar-cat', w).onchange = () => {
       const rea = $('#jbar-rea', w);
@@ -598,11 +629,12 @@ async function openVendorJob(o, reload) {
 
 // ---- GR: Upload ReportRG ปิดงานอัตโนมัติ ----
 VIEWS.grimport = {
-  id: 'grimport', label: 'รับสินค้าเข้าระบบ',
+  id: 'grimport', label: 'Upload ไฟล์ปิดงาน',
   render: () => {
     const w = el(`<div class="view"><div class="card">
       <h3>Upload file รับสินค้าเข้าระบบ (ReportRG / ไฟล์ปิดงาน .xlsx)</h3>
-      <p class="hint">ระบบจับคู่ด้วย "เลขที่ RG" — แถวที่มีวันปิดงาน ("วันที่สร้าง Doc. WH" หรือ "ว.ด.ปี ที่ Complete") = สินค้าเข้าคลังแล้ว → ปิดงานอัตโนมัติ</p>
+      <p class="hint">ระบบจับคู่ด้วย "เลขที่ RG" — แถวที่มีวันปิดงาน ("วันที่สร้าง Doc. WH" หรือ "ว.ด.ปี ที่ Complete") = สินค้าเข้าคลังแล้ว<br>
+        · <b>ไม่มี Remark</b> → ปิดงานอัตโนมัติ &nbsp;·&nbsp; <b>มี Remark</b> → <span class="chip st st-gr_received">รับสินค้าเข้าระบบ</span> รอเคลียร์ Remark ก่อนปิดงาน</p>
       <input id="gfile" type="file" accept=".xlsx,.xls" class="in" />
       <button id="gup" class="btn primary">อัปโหลด & ปิดงาน</button>
       <div id="gout"></div></div></div>`);
@@ -614,6 +646,7 @@ VIEWS.grimport = {
       try {
         const r = await api('/orders/gr-import', { method: 'POST', body: fd });
         out.innerHTML = `<p class="ok">✅ ปิดงาน ${r.completed} รายการ · รายการสินค้า ${r.items} แถว</p>`
+          + (r.gr_received ? `<p class="ok">📦 รับสินค้าเข้าระบบ (มี Remark) ${r.gr_received} รายการ — ยังไม่ปิดงาน ดูที่แท็บ "รับสินค้าเข้าระบบ"</p>` : '')
           + (r.already_completed ? `<p class="hint">ปิดไปก่อนแล้ว ${r.already_completed} รายการ</p>` : '')
           + (r.skipped_new ? `<p class="err">⏭️ ข้าม ${r.skipped_new} เลขที่ RG ที่ไม่มีในระบบ</p>` : '')
           + (r.no_doc_date ? `<p class="err">⏳ ยังไม่มีวันที่สร้าง Doc. WH (ยังไม่เข้าคลัง) ${r.no_doc_date} รายการ</p>` : '');
@@ -624,14 +657,15 @@ VIEWS.grimport = {
   },
 };
 
-// ---- GR: ออเดอร์ที่กำลังเข้ามา ----
+// ---- GR: รับสินค้าเข้าระบบ (งานที่ยังไม่ปิด) ----
 VIEWS.grlist = {
-  id: 'grlist', label: 'ออเดอร์ที่กำลังเข้ามา',
+  id: 'grlist', label: 'รับสินค้าเข้าระบบ',
   render: () => listView({
-    title: 'ออเดอร์ที่กำลังเข้ามา', hint: 'สถานะ "นำกลับคลังแล้ว" รอปิดงาน — แตะแถวเพื่อดู/ปิดงานรายใบ',
+    title: 'รับสินค้าเข้าระบบ',
+    hint: 'งานที่ยังไม่ปิด — "นำกลับคลังแล้ว" รอเข้าคลัง · "รับสินค้าเข้าระบบ" = เข้าคลังแล้วแต่ติด Remark ต้องเคลียร์ก่อนปิดงาน · แตะแถวเพื่อดู/ปิดงานรายใบ',
     wide: true,
     params: () => ({
-      status: $('#gstatus')?.value ?? 'returned',
+      status: $('#gstatus')?.value ?? 'returned,gr_received',
       area: $('#gq-area')?.value.trim() || '', q: $('#gq')?.value.trim() || '',
     }),
     filters: (reload) => {
@@ -639,7 +673,8 @@ VIEWS.grlist = {
         <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
           <input id="gq" class="in" placeholder="เช่น บางรัก ซีเจ, 010011 — RG/Sold To Code/ร้านค้า/อำเภอ/จังหวัด"/></label>
         <label class="jf"><span>สถานะ</span>
-          <select id="gstatus" class="in"><option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${k === 'returned' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+          <select id="gstatus" class="in"><option value="returned,gr_received" selected>ยังไม่ปิดงาน (กลับคลัง + รับเข้าระบบ)</option>
+            <option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
         <label class="jf"><span>พื้นที่</span>
           <input id="gq-area" class="in" placeholder="เช่น กรุงเทพ"/></label>
         <button class="btn primary jf-btn" id="gsearch">ค้นหา</button>
@@ -688,7 +723,9 @@ VIEWS.grlist = {
 
 function openGrComplete(o, reload) {
   openModal(orderDetailHtml(o) + `
-    <hr/><label class="hint">แนบเอกสาร (ไม่บังคับ) แล้วปิดงานรายใบ — หรือใช้แท็บ "รับสินค้าเข้าระบบ" เพื่อปิดจากไฟล์ ReportRG</label>
+    ${o.status === 'gr_received' ? `<div class="vchg-warn">📦 สินค้าเข้าคลังแล้ว (${fmtDate(o.gr_received_date)}) แต่ติด Remark —
+      ตรวจสอบและเคลียร์ Remark ให้เรียบร้อยก่อนกดปิดงาน</div>` : ''}
+    <hr/><label class="hint">แนบเอกสาร (ไม่บังคับ) แล้วปิดงานรายใบ — หรือใช้แท็บ "Upload ไฟล์ปิดงาน" เพื่อปิดจากไฟล์ ReportRG</label>
     <input id="cfile" type="file" class="in"/>
     <button class="btn red" id="done">ปิดงาน</button>
     <div id="m-err" class="err"></div>`);
@@ -705,9 +742,46 @@ function openGrComplete(o, reload) {
 // ---- Supervisor/Admin: all orders (view/edit) ----
 VIEWS.orders = {
   id: 'orders', label: 'ออเดอร์ทั้งหมด',
-  render: () => listView({
+  render: () => {
+    // เปลี่ยน Vendor ได้ 2 ทาง: ปุ่ม 🔄 ในคอลัมน์ Vendor (รายใบ) หรือ ติ๊กหลายใบ → แถบด้านล่าง (ทีเดียวหลายใบ)
+    const selected = new Set();
+    const box = el('<div></div>');
+    const bar = el(`<div class="assign-bar hidden" id="obar">
+      <span id="ocount" class="acount">0</span>
+      <select id="obar-vendor" class="in"></select>
+      <button class="btn red" id="obar-go">เปลี่ยน Vendor ที่เลือก</button>
+      <button class="btn ghost" id="obar-clear">ยกเลิก</button>
+    </div>`);
+    $('#obar-vendor', bar).innerHTML = VENDOR_LIST.length
+      ? VENDOR_LIST.map((v) => `<option value="${v.id}">${esc(v.display_name)}</option>`).join('')
+      : '<option value="">— ยังไม่มี Vendor —</option>';
+
+    const updateBar = () => {
+      $('#ocount', bar).textContent = selected.size;
+      bar.classList.toggle('hidden', selected.size === 0);
+    };
+    // reload ของ listView — เซ็ตหลัง list ถูกสร้าง
+    let reloadList = () => {};
+
+    $('#obar-clear', bar).onclick = () => { selected.clear(); reloadList(); };
+    $('#obar-go', bar).onclick = async () => {
+      const vendor_id = Number($('#obar-vendor', bar).value);
+      if (!vendor_id) { toast('ยังไม่มี Vendor ให้เลือก'); return; }
+      if (!confirm(`เปลี่ยน Vendor ของ ${selected.size} ออเดอร์ เป็น "${vendorLabel(vendor_id)}" ?`)) return;
+      try {
+        const r = await api('/orders/bulk-assign-vendor', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rg_nos: [...selected], vendor_id }),
+        });
+        toast(`เปลี่ยน Vendor สำเร็จ ${r.assigned} รายการ`
+          + (r.skipped ? ` · ข้าม ${r.skipped} รายการ (ปิดงานแล้ว/Vendor เดิม)` : ''));
+        selected.clear(); updateBar(); reloadList();
+      } catch (e) { toast('ผิดพลาด: ' + e.message); }
+    };
+
+    const list = listView({
     title: 'ออเดอร์ทั้งหมด',
-    hint: 'ค้นหา/กรอง แล้วแตะแถวเพื่อดู/แก้ไขทุกช่อง',
+    hint: 'ค้นหา/กรอง · แตะแถวเพื่อดู/แก้ไขทุกช่อง · กด 🔄 ที่คอลัมน์ Vendor เพื่อเปลี่ยนรายใบ หรือติ๊กหลายใบแล้วเปลี่ยนพร้อมกันด้านล่าง',
     wide: true,
     params: () => ({ status: $('#fstatus')?.value || '', area: $('#farea')?.value.trim() || '', q: $('#fq')?.value.trim() || '' }),
     filters: (reload) => {
@@ -734,18 +808,46 @@ VIEWS.orders = {
       };
       return f;
     },
-    renderRows: (data, reload) => ordersTable(data, (o) => openSupervisorEdit(o, reload)),
-  }),
+    renderRows: (data, reload) => {
+      reloadList = reload;
+      // ล้างรายการที่เลือกไว้แต่ไม่อยู่ในหน้านี้แล้ว — กันเผลอเปลี่ยน Vendor ใบที่มองไม่เห็น
+      const visible = new Set(data.map((o) => o.rg_no));
+      [...selected].forEach((rg) => { if (!visible.has(rg)) selected.delete(rg); });
+      updateBar();
+      return ordersTable(data, (o) => openSupervisorEdit(o, reload),
+        { selected, onChange: updateBar },
+        { onVendorChange: (o) => openVendorChange(o, reload) });
+    },
+    });
+
+    box.appendChild(list);
+    box.appendChild(bar);
+    return box;
+  },
 };
 
 // ตารางรายละเอียดออเดอร์ครบทุกคอลัมน์ + 5 วันที่ (ใช้ร่วมหลายหน้า)
 //   select (ทางเลือก): { selected:Set<rg_no>, onChange() } — เปิดคอลัมน์ checkbox + เลือกทั้งหมด
-function ordersTable(data, onRowClick, select) {
+//   opt.onVendorChange (ทางเลือก): (order) => {} — เปิดคอลัมน์ Vendor + ปุ่มเปลี่ยน Vendor รายใบ
+function ordersTable(data, onRowClick, select, opt = {}) {
+  const withVendor = !!opt.onVendorChange;
   const dcell = (v) => v ? `<td class="dt">${fmtDate(v)}</td>` : '<td class="dt"><span class="muted">-</span></td>';
+  // สินค้าเข้าคลัง/ปิดงานแล้วห้ามเปลี่ยน Vendor (ตรงกับ REASSIGNABLE ฝั่ง API)
+  const canChange = (o) => !['gr_received', 'completed'].includes(o.status);
+  const vcell = (o) => {
+    const name = vendorLabel(o.vendor_id);
+    const body = name
+      ? `<span class="vname">${esc(name)}</span>`
+      : '<span class="vname none">ยังไม่มอบหมาย</span>';
+    const btn = canChange(o)
+      ? `<button class="vchg" title="เปลี่ยน Vendor">🔄</button>`
+      : '';
+    return `<td class="vend">${body}${btn}</td>`;
+  };
   const wrap = el(`<div class="table-scroll"><table class="otable">
     <thead><tr>
       ${select ? '<th><input type="checkbox" class="selall" title="เลือกทั้งหมด"/></th>' : ''}
-      <th class="no">เลขที่ RG</th><th class="st">สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To Code</th><th>Sold To</th><th>จังหวัด</th>
+      <th class="no">เลขที่ RG</th><th class="st">สถานะ</th>${withVendor ? '<th class="vend">Vendor</th>' : ''}<th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th><th>จังหวัด</th>
       <th class="num">กล่อง</th><th class="num">ชิ้น</th>
       <th class="dt">วันที่พิมพ์</th><th class="dt">มอบหมาย</th><th class="dt">รับสินค้า</th><th class="dt">กลับคลัง</th><th class="dt">ปิดงาน</th><th></th>
     </tr></thead><tbody></tbody></table></div>`);
@@ -762,15 +864,19 @@ function ordersTable(data, onRowClick, select) {
       ${select ? `<td><input type="checkbox" class="osel" ${select.selected.has(o.rg_no) ? 'checked' : ''}/></td>` : ''}
       <td class="no">${esc(o.rg_no)}</td>
       <td class="st">${statusChip(o.status)}</td>
+      ${withVendor ? vcell(o) : ''}
       <td>${esc(o.zone || '-')}</td>
       <td class="code">${esc(o.sold_to_code || '-')}</td>
-      <td class="code">${esc(o.ship_to_code || '-')}</td>
+      <td class="code">${esc(o.sold_to || '-')}</td>
       <td class="l soldto">${esc(o.sold_to_name || '-')}</td>
       <td>${esc(o.province || '-')}</td>
       <td class="num">${o.qty_boxes ?? 0}</td>
       <td class="num">${o.qty_pieces ?? 0}</td>
       ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.received_date)}${dcell(o.returned_date)}${dcell(o.completed_date)}
       <td class="edit">✏️</td></tr>`);
+    // ปุ่มเปลี่ยน Vendor — กันไม่ให้ไปเปิดโมดัลแก้ไข/ติ๊ก checkbox ของแถว
+    const vbtn = withVendor ? $('.vchg', tr) : null;
+    if (vbtn) vbtn.onclick = (e) => { e.stopPropagation(); opt.onVendorChange(o); };
     if (select) {
       const cb = $('.osel', tr);
       const setRow = () => { cb.checked ? select.selected.add(o.rg_no) : select.selected.delete(o.rg_no); tr.classList.toggle('on', cb.checked); syncSelAll(); select.onChange(); };
@@ -819,6 +925,7 @@ function openSupervisorEdit(o, reload) {
     ['sold_to_name', 'ร้านค้า'], ['ship_to_name', 'ที่อยู่ส่ง'], ['qty_boxes', 'กล่อง'], ['qty_pieces', 'ชิ้น'],
     ['wh_code', 'WH'], ['reason_text', 'เหตุผล'], ['contact_name', 'ผู้ติดต่อ'], ['contact_phone', 'เบอร์'],
     ['received_date', 'วันที่รับสินค้า (yyyy-mm-dd)'], ['returned_date', 'วันกลับคลัง (yyyy-mm-dd)'], ['completed_date', 'วันปิดงาน (yyyy-mm-dd)'],
+    ['gr_remark', 'Remark (คลัง) — ลบออกเมื่อเคลียร์แล้ว'],
   ];
   openModal(`<div class="d-no">${esc(o.rg_no)} — แก้ไข</div>
     ${dateTimelineHtml(o)}
@@ -838,6 +945,39 @@ function openSupervisorEdit(o, reload) {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       });
       closeModal(); reload();
+    } catch (e) { $('#m-err').textContent = e.message; }
+  };
+}
+
+// เปลี่ยน Vendor รายใบ — โมดัลสั้นๆ เลือกแล้วบันทึกจบ ไม่ต้องเข้าฟอร์มแก้ไขเต็ม
+//   งานที่เลยขั้น "มอบหมายแล้ว" มาแล้ว เปลี่ยนได้แต่เตือนว่ากระทบ KPI ของ Vendor เดิม/ใหม่
+function openVendorChange(o, reload) {
+  const current = vendorLabel(o.vendor_id);
+  const midFlow = ['received', 'returned'].includes(o.status);
+  const opts = VENDOR_LIST.length
+    ? VENDOR_LIST.map((v) => `<option value="${v.id}" ${o.vendor_id === v.id ? 'selected' : ''}>${esc(v.display_name)}</option>`).join('')
+    : '<option value="">— ยังไม่มี Vendor —</option>';
+  openModal(`<div class="d-no">${esc(o.rg_no)} — เปลี่ยน Vendor</div>
+    <div class="vchg-card">
+      <div class="vchg-row"><span class="hint">ร้านค้า</span><b>${esc(o.sold_to_name || '-')}</b></div>
+      <div class="vchg-row"><span class="hint">สถานะ</span>${statusChip(o.status)}</div>
+      <div class="vchg-row"><span class="hint">Vendor ปัจจุบัน</span>
+        <b class="${current ? '' : 'muted'}">${esc(current || 'ยังไม่มอบหมาย')}</b></div>
+    </div>
+    ${midFlow ? '<div class="vchg-warn">⚠️ งานนี้เริ่มดำเนินการแล้ว — เปลี่ยน Vendor จะทำให้งานไปอยู่ในสถิติ KPI ของ Vendor ใหม่ (วันที่มอบหมายเดิมไม่เปลี่ยน)</div>' : ''}
+    <label class="hint">เปลี่ยนเป็น Vendor</label>
+    <select class="in" id="vc_sel">${opts}</select>
+    <button class="btn primary" id="vc_save">บันทึกการเปลี่ยน</button>
+    <div id="m-err" class="err"></div>`);
+  $('#vc_save').onclick = async () => {
+    const vendor_id = Number($('#vc_sel').value);
+    if (!vendor_id) { $('#m-err').textContent = 'ยังไม่มี Vendor ให้เลือก'; return; }
+    if (vendor_id === o.vendor_id) { closeModal(); return; }
+    try {
+      await api('/orders/' + encodeURIComponent(o.rg_no) + '/assign-vendor', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vendor_id }),
+      });
+      closeModal(); toast(`เปลี่ยน Vendor เป็น ${vendorLabel(vendor_id)} แล้ว`); reload();
     } catch (e) { $('#m-err').textContent = e.message; }
   };
 }
@@ -1062,7 +1202,7 @@ VIEWS.arearules = {
   id: 'arearules', label: 'กติกาพื้นที่',
   render: () => {
     const w = el(`<div class="view"><h3>กติกาจัดพื้นที่อัตโนมัติ (Priority Rules)</h3>
-      <p class="hint">ระบบจับคู่ order → Vendor โดยไล่จากเจาะจงไปกว้าง: <b>Ship To Code → Sold To → Sold To Code → เขต</b>
+      <p class="hint">ระบบจับคู่ order → Vendor โดยไล่จากเจาะจงไปกว้าง: <b>Ship To Code → Ship To → Sold To Code → เขต</b>
       (rule แรกที่ค่าตรงและ field เดียวกัน เรียงตาม Priority น้อย→มาก)</p>
       <div class="card"><h4>เพิ่ม Rule</h4>
         <div class="row"><input id="r_pri" class="in" type="number" value="100" title="Priority"/>
@@ -1179,7 +1319,11 @@ VIEWS.unassigned = {
             <input id="usearch" class="in" placeholder="เช่น บางรัก ซีเจ, 010011 — RG/Sold To Code/ร้านค้า/อำเภอ/จังหวัด"/></label>
           <label class="jf"><span>จัดกลุ่มตาม</span>
             <select id="ugrpby" class="in">${GROUP_FIELDS.map((g) => `<option value="${g.key}">${g.label}</option>`).join('')}</select></label>
+          <label class="jf jf-chk"><span>ตัวกรอง</span>
+            <label class="chk"><input type="checkbox" id="uhide" checked/>
+              <span>ซ่อน Sold To Code = ${esc(HIDE_SOLD_TO_CODE)}</span></label></label>
         </div>
+        <div id="uhidden" class="hint"></div>
       </div>
       <div id="ulist2"></div>
       <p class="hint">💡 ตั้ง <b>กติกาจัดพื้นที่</b> เพื่อให้ระบบ assign ให้อัตโนมัติตอน Upload ครั้งถัดไป</p></div>
@@ -1222,9 +1366,23 @@ VIEWS.unassigned = {
     function render() {
       const box = $('#ulist2', w); box.innerHTML = '';
       if (!all.length) { box.innerHTML = '<div class="empty">ไม่มีออเดอร์รอจัดพื้นที่ 🎉</div>'; return; }
+      // ตัวกรองเริ่มต้น: ซ่อน Sold To Code ที่ไม่ต้องจัดพื้นที่ (ติ๊กออกเพื่อดูทั้งหมด)
+      const hide = $('#uhide', w).checked;
+      const shown = hide ? all.filter((o) => String(o.sold_to_code || '') !== HIDE_SOLD_TO_CODE) : all;
+      const nHidden = all.length - shown.length;
+      // ใบที่ถูกซ่อนต้องไม่ค้างอยู่ในรายการที่เลือก — กันเผลอ assign ใบที่มองไม่เห็น
+      if (nHidden) {
+        const visible = new Set(shown.map((o) => o.rg_no));
+        [...selected].forEach((rg) => { if (!visible.has(rg)) selected.delete(rg); });
+        updateBar();
+      }
+      $('#uhidden', w).innerHTML = nHidden
+        ? `ซ่อนอยู่ <b>${nHidden}</b> ออเดอร์ (Sold To Code = ${esc(HIDE_SOLD_TO_CODE)}) — ติ๊ก "ซ่อน…" ออกเพื่อดู`
+        : '';
+      if (!shown.length) { box.innerHTML = `<div class="empty">ไม่มีออเดอร์รอจัดพื้นที่ (ซ่อนอยู่ ${nHidden} ออเดอร์) 🎉</div>`; return; }
       const gk = $('#ugrpby', w).value;
       const groups = new Map();
-      for (const o of all) {
+      for (const o of shown) {
         const key = gk ? (o[gk] || '(ไม่ระบุ)') : '__all__';
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(o);
@@ -1238,7 +1396,7 @@ VIEWS.unassigned = {
         const tblWrap = el(`<div class="table-scroll"><table class="otable">
           <thead><tr>
             <th><input type="checkbox" class="selall" title="เลือกทั้งหมด"/></th>
-            <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To Code</th><th>Sold To</th>
+            <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th>
             <th class="num">กล่อง</th><th class="num">ชิ้น</th><th>WH</th><th>อำเภอ</th><th>จังหวัด</th><th>Region</th>
             <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่ Upload</th>
           </tr></thead><tbody></tbody></table></div>`);
@@ -1250,7 +1408,7 @@ VIEWS.unassigned = {
             <td>${statusChip(o.status)}</td>
             <td>${esc(o.zone || '-')}</td>
             <td class="code">${esc(o.sold_to_code || '-')}</td>
-            <td class="code">${esc(o.ship_to_code || '-')}</td>
+            <td class="code">${esc(o.sold_to || '-')}</td>
             <td class="l soldto">${esc(o.sold_to_name || '-')}</td>
             <td class="num">${o.qty_boxes ?? 0}</td>
             <td class="num">${o.qty_pieces ?? 0}</td>
@@ -1299,6 +1457,7 @@ VIEWS.unassigned = {
 
     function updateBar() { $('#ucount', w).textContent = selected.size; $('#ubar', w).classList.toggle('hidden', selected.size === 0); }
     $('#ugrpby', w).onchange = render;
+    $('#uhide', w).onchange = render;   // กรองฝั่ง client — ไม่ต้องโหลดใหม่
     let t; $('#usearch', w).oninput = () => { clearTimeout(t); t = setTimeout(load, 400); };
     $('#ubar-go', w).onclick = async () => {
       const vendor_id = Number($('#ubar-vendor', w).value);
@@ -1516,6 +1675,7 @@ function supervisorDashboard() {
       ['assigned_vendor', 'มอบหมายแล้ว', 'blue'],
       ['received', 'รับสินค้าแล้ว', 'blue'],
       ['returned', 'นำกลับคลังแล้ว', 'warn'],
+      ['gr_received', 'รับสินค้าเข้าระบบ', 'warn'],
       ['completed', 'ปิดงาน', 'ok'],
     ];
     const max = Math.max(1, ...flow.map(([key]) => c[key] ?? 0));
@@ -1672,6 +1832,7 @@ function orderDetailHtml(o) {
     ${o.reference ? `<div class="kv"><span>Reference</span><span>${esc(o.reference)}</span></div>` : ''}
     <div class="kv"><span>ร้านค้า</span><span>${esc(o.sold_to_name || '-')}</span></div>
     <div class="kv"><span>จำนวน</span><span>${o.qty_boxes ?? 0} กล่อง · ${o.qty_pieces ?? 0} ชิ้น</span></div>
+    ${o.gr_remark ? `<div class="kv"><span>Remark (คลัง)</span><span class="gr-remark">${esc(o.gr_remark)}</span></div>` : ''}
     <div class="kv"><span>วันที่มอบหมาย</span><span>${o.assigned_at ? fmtDate(o.assigned_at) : '-'}</span></div>
     <div class="kv"><span>วันที่รับสินค้า</span><span>${o.received_date ? fmtDate(o.received_date) : '-'}</span></div>
     <div class="kv"><span>วันกลับคลัง</span><span>${o.returned_date ? fmtDate(o.returned_date) : '-'}</span></div>
@@ -1788,7 +1949,8 @@ function toast(msg) {
 function showLogin() { $('#login').classList.remove('hidden'); $('#app').classList.add('hidden'); }
 async function showApp() {
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
-  await Promise.all([loadNoteCategories(), loadKpiLimits()]); // โหลดหมวด + เกณฑ์ KPI ก่อน render
+  // โหลดหมวด + เกณฑ์ KPI + รายชื่อ Vendor ก่อน render (Vendor ใช้แสดงชื่อในตารางออเดอร์)
+  await Promise.all([loadNoteCategories(), loadKpiLimits(), loadVendorList()]);
   renderShell();
 }
 function doLogout(silent) {

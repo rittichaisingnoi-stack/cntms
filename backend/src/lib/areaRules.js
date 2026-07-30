@@ -1,9 +1,9 @@
 import { supabase } from './supabase.js';
 
 // เงื่อนไขที่ใช้จับคู่ Vendor — ระบบไล่จาก "เจาะจงที่สุด → กว้างที่สุด" ตามลำดับนี้เสมอ
-// (ค่าใน rg_headers: sold_to (รหัสลูกค้า) → sold_to_code → zone (เขต) → region (ภูมิภาค))
+// (ค่าใน rg_headers: sold_to = Ship To (ปลายทาง) → sold_to_code → zone (เขต) → region (ภูมิภาค))
 export const RULE_FIELDS = {
-  sold_to: 'Sold To (รหัสลูกค้า)',
+  sold_to: 'Ship To (ปลายทาง)',
   sold_to_code: 'Sold To Code',
   zone: 'เขต',
   region: 'Region (ภูมิภาค)',

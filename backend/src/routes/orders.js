@@ -43,7 +43,11 @@ router.get('/', async (req, res) => {
   // ขอบเขตข้อมูลตาม role: vendor เห็นเฉพาะงานตัวเอง; gr/supervisor/admin เห็นหมด
   if (role === 'vendor') query = query.eq('vendor_id', id);
 
-  if (status) query = query.eq('status', status);
+  // status รับได้ทั้งค่าเดียว และหลายค่าคั่นด้วย comma (เช่น returned,gr_received)
+  if (status) {
+    const list = String(status).split(',').map((s) => s.trim()).filter(Boolean);
+    query = list.length > 1 ? query.in('status', list) : query.eq('status', list[0] || status);
+  }
   if (area && area.trim()) query = query.ilike('area', `%${area.trim()}%`);
   query = applySearch(query, q); // ค้นหาหลายค่า (comma=OR, เว้นวรรค=AND) ในหลายคอลัมน์
   query = query.order('status_rank', { ascending: true }).order('rg_no', { ascending: true });
@@ -87,49 +91,87 @@ router.post('/auto-assign', requireRole('supervisor'), async (req, res) => {
   }
 });
 
-// PUT /api/orders/bulk-assign-vendor  (supervisor) — assign มือ { rg_nos: [...], vendor_id }
+// เปลี่ยน Vendor ของ order ที่ "เลยขั้น pending มาแล้ว" ต้องคงสถานะ + assigned_at เดิมไว้
+//   ถ้า reset assigned_at ใหม่ KPI ช่วง 1 (รับสินค้า − มอบหมาย) จะเพี้ยนย้อนหลังทันที
+//   pending → ถือเป็นการมอบหมายครั้งแรก จึงเลื่อนสถานะ + ประทับวันมอบหมาย
+// สินค้าเข้าคลังแล้ว (gr_received) หรือปิดงานแล้ว — งานของ Vendor จบไปแล้ว ห้ามเปลี่ยน
+const REASSIGNABLE = ['pending', 'assigned_vendor', 'received', 'returned'];
+function assignPatch(order, vendor_id, adminId) {
+  const first = order.status === 'pending';
+  return {
+    vendor_id,
+    admin_id: adminId,
+    ...(first ? { status: 'assigned_vendor', assigned_at: now() } : {}),
+    updated_at: now(),
+  };
+}
+
+// PUT /api/orders/bulk-assign-vendor  (supervisor) — assign มือ / เปลี่ยน Vendor
+//   { rg_nos: [...], vendor_id }
 router.put('/bulk-assign-vendor', requireRole('supervisor'), async (req, res) => {
   const { rg_nos, vendor_id } = req.body || {};
   if (!Array.isArray(rg_nos) || !rg_nos.length) return res.status(400).json({ error: 'กรุณาเลือกออเดอร์' });
   if (!vendor_id) return res.status(400).json({ error: 'กรุณาเลือก Vendor' });
 
   const { data: valid, error: se } = await supabase
-    .from('rg_headers').select('rg_no').in('rg_no', rg_nos).eq('status', 'pending');
+    .from('rg_headers').select('rg_no, status, vendor_id').in('rg_no', rg_nos).in('status', REASSIGNABLE);
   if (se) return res.status(500).json({ error: se.message });
-  const targets = (valid || []).map((r) => r.rg_no);
-  if (!targets.length) return res.json({ assigned: 0 });
+  // ตัดใบที่เป็น Vendor เดิมอยู่แล้วออก — ไม่ต้องเขียนทับ/ไม่ต้องบันทึกประวัติซ้ำ
+  const targets = (valid || []).filter((r) => r.vendor_id !== vendor_id);
+  const skipped = rg_nos.length - targets.length;
+  if (!targets.length) return res.json({ assigned: 0, skipped });
 
-  const { error } = await supabase
-    .from('rg_headers')
-    .update({ vendor_id, admin_id: req.user.id, status: 'assigned_vendor', assigned_at: now(), updated_at: now() })
-    .in('rg_no', targets);
-  if (error) return res.status(500).json({ error: error.message });
-  await supabase.from('order_tracking').insert(
-    targets.map((rg_no) => ({ rg_no, status: 'assigned_vendor', action_by: req.user.id, note: 'assign มือ' }))
-  );
-  res.json({ assigned: targets.length });
+  // สถานะต่างกันต้อง patch ต่างกัน — แยกเป็น 2 กลุ่ม (pending = มอบหมายครั้งแรก / ที่เหลือ = เปลี่ยน Vendor)
+  const firstTime = targets.filter((r) => r.status === 'pending').map((r) => r.rg_no);
+  const changing = targets.filter((r) => r.status !== 'pending').map((r) => r.rg_no);
+
+  if (firstTime.length) {
+    const { error } = await supabase.from('rg_headers')
+      .update(assignPatch({ status: 'pending' }, vendor_id, req.user.id)).in('rg_no', firstTime);
+    if (error) return res.status(500).json({ error: error.message });
+  }
+  if (changing.length) {
+    const { error } = await supabase.from('rg_headers')
+      .update(assignPatch({ status: 'assigned_vendor' }, vendor_id, req.user.id)).in('rg_no', changing);
+    if (error) return res.status(500).json({ error: error.message });
+  }
+
+  await supabase.from('order_tracking').insert([
+    ...firstTime.map((rg_no) => ({ rg_no, status: 'assigned_vendor', action_by: req.user.id, note: 'assign มือ' })),
+    ...changing.map((rg_no) => {
+      const prev = targets.find((t) => t.rg_no === rg_no);
+      return { rg_no, status: prev.status, action_by: req.user.id, note: 'เปลี่ยน Vendor' };
+    }),
+  ]);
+  res.json({ assigned: targets.length, skipped });
 });
 
-// PUT /api/orders/:rgNo/assign-vendor  (supervisor) — { vendor_id }
+// PUT /api/orders/:rgNo/assign-vendor  (supervisor) — { vendor_id } · assign มือ / เปลี่ยน Vendor รายใบ
 router.put('/:rgNo/assign-vendor', requireRole('supervisor'), async (req, res) => {
   const { vendor_id } = req.body || {};
   if (!vendor_id) return res.status(400).json({ error: 'กรุณาเลือก Vendor' });
   const order = await loadOrder(req.params.rgNo);
   if (!order) return res.status(404).json({ error: 'ไม่พบ Order' });
+  if (!REASSIGNABLE.includes(order.status)) return res.status(400).json({ error: 'งานปิดแล้ว เปลี่ยน Vendor ไม่ได้' });
+  if (order.vendor_id === vendor_id) return res.json({ ok: true, unchanged: true });
 
   const { error } = await supabase
     .from('rg_headers')
-    .update({ vendor_id, admin_id: req.user.id, status: 'assigned_vendor', assigned_at: now(), updated_at: now() })
+    .update(assignPatch(order, vendor_id, req.user.id))
     .eq('rg_no', req.params.rgNo);
   if (error) return res.status(500).json({ error: error.message });
-  await track(req.params.rgNo, 'assigned_vendor', req.user.id);
+  await track(req.params.rgNo, order.status === 'pending' ? 'assigned_vendor' : order.status,
+    req.user.id, { note: order.status === 'pending' ? 'assign มือ' : 'เปลี่ยน Vendor' });
   res.json({ ok: true });
 });
 
 // ---- Vendor: กรอกวันที่รับสินค้าจริง / วันนำสินค้ากลับคืนคลังจริง ----
 
 // สถานะหลัง vendor อัปเดตวันที่ — ปิดงานแล้วห้ามแก้
+//   ถ้า GR รับเข้าระบบไปแล้ว (gr_received) ห้ามถอยสถานะกลับมาเป็น returned/received
+//   ไม่งั้นแก้วันที่ทีเดียวงานจะหลุดออกจากคิวของ GR และ Remark ค้างอยู่โดยไม่มีใครเห็น
 function vendorStatus(order, { received_date, returned_date }) {
+  if (order.status === 'gr_received') return order.status;
   const rec = received_date ?? order.received_date;
   const ret = returned_date ?? order.returned_date;
   if (ret) return 'returned';
@@ -489,8 +531,10 @@ router.post('/gr-import', requireRole('gr'), upload.single('file'), async (req, 
       items = keepItems.length;
     }
 
-    // ปิดงาน: RG ที่มี "วันที่สร้าง Doc. WH" = สินค้าเข้าคลังแล้ว (เฉพาะ RG ที่มีใน DB)
-    let completed = 0, already = 0, noDate = 0;
+    // รับสินค้าเข้าระบบ / ปิดงาน: RG ที่มี "วันที่สร้าง Doc. WH" = สินค้าเข้าคลังแล้ว
+    //   มี Remark  → gr_received (รับสินค้าเข้าระบบ) — ค้างไว้ให้ตามเคลียร์ Remark ก่อน
+    //   ไม่มี Remark → completed  (ปิดงาน)
+    let completed = 0, grReceived = 0, already = 0, noDate = 0;
     const withDate = new Set(parsed.completions.map((c) => c.rg_no));
     noDate = [...existing].filter((rg) => !withDate.has(rg)).length;
 
@@ -500,15 +544,30 @@ router.post('/gr-import', requireRole('gr'), upload.single('file'), async (req, 
         .from('rg_headers').select('status').eq('rg_no', c.rg_no).maybeSingle();
       if (!cur) continue;
       if (cur.status === 'completed') { already++; continue; }
+      const remark = (c.remark || '').trim();
+      const status = remark ? 'gr_received' : 'completed';
+      // มี Remark = ยังไม่ปิดงานจริง จึงยังไม่ประทับ completed_date (KPI ช่วง 3 นับจากช่องนี้)
+      //   เก็บวันที่รับเข้าระบบไว้ที่ gr_received_date ไปก่อน แล้วค่อยยกไปตอนปิดงาน
       const { error } = await supabase.from('rg_headers')
-        .update({ doc_wh: c.doc_wh, completed_date: c.completed_date, status: 'completed', updated_at: now() })
+        .update({
+          doc_wh: c.doc_wh, status, gr_remark: remark || null, updated_at: now(),
+          ...(remark
+            ? { gr_received_date: c.completed_date }
+            : { completed_date: c.completed_date, gr_received_date: c.completed_date }),
+        })
         .eq('rg_no', c.rg_no);
       if (!error) {
-        completed++;
-        await track(c.rg_no, 'completed', req.user.id, { note: `Doc. WH ${c.doc_wh || '-'} · ${c.completed_date}` });
+        if (status === 'completed') completed++; else grReceived++;
+        const docNote = `Doc. WH ${c.doc_wh || '-'} · ${c.completed_date}`;
+        // สินค้าเข้าคลังทั้ง 2 กรณี → บันทึก gr_received เสมอ (เป็นที่มาของ วันที่/User WH RCV ในรายงาน)
+        await track(c.rg_no, 'gr_received', req.user.id, {
+          note: docNote + (remark ? ` · Remark: ${remark}` : ''),
+        });
+        // ไม่มี Remark = ปิดงานในขั้นตอนเดียวกัน → บันทึกอีกแถวเป็นผู้ปิดงาน
+        if (status === 'completed') await track(c.rg_no, 'completed', req.user.id, { note: docNote });
       }
     }
-    res.json({ items, completed, already_completed: already, no_doc_date: noDate, skipped_new: skippedNew });
+    res.json({ items, completed, gr_received: grReceived, already_completed: already, no_doc_date: noDate, skipped_new: skippedNew });
   } catch (e) {
     res.status(500).json({ error: 'บันทึกลงฐานข้อมูลไม่สำเร็จ: ' + e.message });
   }
@@ -528,7 +587,11 @@ router.post('/:rgNo/complete', requireRole('gr'), upload.single('file'), async (
       return res.status(500).json({ error: 'อัปโหลดไฟล์ไม่สำเร็จ: ' + e.message });
     }
   }
-  const patch = { status: 'completed', completed_date: new Date().toISOString().slice(0, 10), updated_at: now() };
+  // ใบที่เคยรับเข้าระบบแล้ว (ติด Remark) ใช้วันที่เข้าคลังจริงเป็นวันปิดงาน ไม่ใช่วันที่กดปุ่ม
+  const patch = {
+    status: 'completed', updated_at: now(),
+    completed_date: order.gr_received_date || new Date().toISOString().slice(0, 10),
+  };
   if (url) patch.completed_file_url = url;
   const { error } = await supabase.from('rg_headers').update(patch).eq('rg_no', req.params.rgNo);
   if (error) return res.status(500).json({ error: error.message });
@@ -542,19 +605,21 @@ router.post('/bulk-complete', requireRole('gr'), async (req, res) => {
   if (!Array.isArray(rg_nos) || !rg_nos.length) return res.status(400).json({ error: 'กรุณาเลือกออเดอร์' });
 
   const { data: targets, error: se } = await supabase
-    .from('rg_headers').select('rg_no, status').in('rg_no', rg_nos);
+    .from('rg_headers').select('rg_no, status, gr_received_date').in('rg_no', rg_nos);
   if (se) return res.status(500).json({ error: se.message });
   const list = (targets || []).filter((t) => t.status !== 'completed');
   const already = (targets || []).length - list.length;
   if (!list.length) return res.status(400).json({ error: already ? 'งานที่เลือกปิดแล้วทั้งหมด' : 'ไม่พบออเดอร์ตามที่เลือก' });
 
-  const completed_date = new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
   let completed = 0;
   for (const t of list) {
+    // ใบที่เคยรับเข้าระบบแล้ว (ติด Remark) ใช้วันที่รับเข้าคลังจริงเป็นวันปิดงาน ไม่ใช่วันที่กดปุ่ม
+    const completed_date = t.gr_received_date || today;
     const { error } = await supabase.from('rg_headers')
       .update({ status: 'completed', completed_date, updated_at: now() })
       .eq('rg_no', t.rg_no).neq('status', 'completed');
-    if (!error) { completed++; await track(t.rg_no, 'completed', req.user.id); }
+    if (!error) { completed++; await track(t.rg_no, 'completed', req.user.id, { note: 'เคลียร์ Remark' }); }
   }
   res.json({ completed, already_completed: already });
 });
@@ -566,7 +631,7 @@ router.put('/:rgNo', requireRole('supervisor'), async (req, res) => {
     'qty_boxes', 'qty_pieces', 'reason_note', 'wh_code', 'reason_code', 'reason_text',
     'rg_date', 'sales_org', 'contact_name', 'contact_phone', 'sales_person',
     'province', 'district', 'region', 'area', 'status', 'vendor_id',
-    'received_date', 'returned_date', 'completed_date',
+    'received_date', 'returned_date', 'completed_date', 'gr_received_date', 'gr_remark',
   ];
   const patch = { updated_at: now() };
   for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];

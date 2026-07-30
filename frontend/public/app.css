@@ -79,6 +79,8 @@ small{color:var(--muted);font-weight:400}
 .st-assigned_vendor{background:#e7effe;color:#0b3d91}
 .st-returned{background:#fff3d9;color:#8a5a00}
 .st-received{background:#e3f5e9;color:#0a7a34}
+/* รับสินค้าเข้าระบบ = ของถึงคลังแล้วแต่ติด Remark ยังปิดงานไม่ได้ — ใช้สีม่วงให้ต่างจากปิดงาน (เขียว) ชัดเจน */
+.st-gr_received{background:#ede7fb;color:#4a2a91}
 .st-completed{background:#0a7a34;color:#fff}
 
 /* dashboard stat grid */
@@ -294,6 +296,9 @@ small{color:var(--muted);font-weight:400}
 .jf-search{flex:1 1 240px;min-width:200px}
 .jf:not(.jf-search) .in{min-width:150px}
 .jfilters .jf-btn{width:auto;flex:0 0 auto;padding:11px 24px;margin-bottom:0}
+/* ช่อง filter แบบ checkbox — จัดให้สูงเท่าช่อง input ที่อยู่ข้างกัน */
+.jf-chk .chk{font-size:13px;white-space:nowrap;padding:11px 0;font-weight:600}
+.jf-chk .chk input{width:17px;height:17px}
 @media(max-width:560px){.jf,.jfilters .jf-btn{flex:1 1 100%;width:100%}}
 
 /* ตารางออเดอร์ */
@@ -330,6 +335,23 @@ small{color:var(--muted);font-weight:400}
 .otable tbody tr.on{background:#e3ecff}
 .otable tbody tr.on:hover{background:#d6e3ff}
 
+/* คอลัมน์ Vendor + ปุ่มเปลี่ยน Vendor (หน้าออเดอร์ทั้งหมด) */
+.otable th.vend{min-width:150px}
+.otable td.vend{white-space:nowrap}
+.otable td.vend .vname{font-weight:700}
+.otable td.vend .vname.none{font-weight:500;color:var(--muted);font-style:italic}
+.otable td.vend .vchg{margin-left:6px;border:1px solid var(--line);background:#fff;border-radius:6px;
+  cursor:pointer;padding:1px 5px;font-size:12px;line-height:1.5;opacity:.35;transition:opacity .12s,border-color .12s}
+.otable tbody tr:hover td.vend .vchg{opacity:1;border-color:var(--blue)}
+.otable td.vend .vchg:hover{background:#e8f0ff}
+/* โมดัลเปลี่ยน Vendor */
+.vchg-card{background:#f5f8ff;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px}
+.vchg-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:4px 0}
+.vchg-warn{background:#fff6e5;border:1px solid #f0d9a8;border-left:4px solid #d98a00;color:#7a4b00;
+  border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;line-height:1.5}
+/* Remark จากไฟล์ปิดงานของคลัง — ต้องอ่านง่าย ข้อความอาจยาว */
+.gr-remark{color:#4a2a91;font-weight:700;text-align:right;white-space:pre-wrap;word-break:break-word}
+
 /* bulk assign vendor */
 .agroup{padding:10px 12px}
 .agroup-head{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:6px}
@@ -346,6 +368,17 @@ small{color:var(--muted);font-weight:400}
 .assign-bar .btn{width:auto;white-space:nowrap}
 .acount{background:var(--red);color:#fff;font-weight:800;border-radius:20px;padding:4px 12px;flex:0 0 auto}
 .acount::after{content:' ใบ'}
+/* แถบบันทึกหน้างานที่ได้รับมอบหมาย — ปุ่มเดียวบันทึกทุกช่อง จึงต้องมีป้ายบอกว่าช่องไหนคืออะไร */
+.jbar-f{display:flex;flex-direction:column;gap:3px;flex:1;min-width:130px}
+.jbar-f>span{font-size:11px;color:var(--muted);font-weight:700;line-height:1}
+.jbar-f .in{margin-bottom:0;width:100%}
+.jbar-f-wide{flex:1.6}
+#jbar-save{flex:0 0 auto;align-self:flex-end}
+@media(max-width:760px){
+  .assign-bar{flex-wrap:wrap}
+  .jbar-f{min-width:calc(50% - 5px)}
+  #jbar-save{width:100%;align-self:auto}
+}
 
 /* alert banner (waiting assignment) */
 .alert-banner{background:#fde7ec;border:1px solid #f5c2cf;border-left:4px solid var(--red);color:#8a1029;border-radius:10px;padding:12px 14px;margin-bottom:12px;font-size:14px}

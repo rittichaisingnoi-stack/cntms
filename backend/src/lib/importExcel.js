@@ -195,8 +195,11 @@ function parseSummary(rows) {
 // Invoice | เหตุผล CN | เลขที่ RG | Doc WH | วันที่ Doc WH | ประเภท | จำนวนเงิน
 function parseDetail(rows) {
   const items = [];
-  // เลขที่ RG → { doc_wh, completed_date } จากคอลัมน์ Doc. WH / วันที่สร้าง Doc. WH
+  // เลขที่ RG → { doc_wh, completed_date, remark } จากคอลัมน์ Doc. WH / วันที่สร้าง Doc. WH
   // มีวันที่ = สินค้ารับเข้าคลังแล้ว → ใช้ปิดงาน (GR upload)
+  // Remark หาจากชื่อหัวคอลัมน์ (ไฟล์นี้คอลัมน์อื่นอ่านตามตำแหน่ง แต่ Remark อาจไม่มี/อยู่ท้ายสุด)
+  const hdr0 = (rows[0] || []).map((c) => String(c ?? '').trim().toLowerCase());
+  const cRemark = hdr0.findIndex((h) => /remark|หมายเหตุ/.test(h));
   const completions = new Map();
   for (const r of rows.slice(1)) {
     const rgNo = String(r[10] ?? '').trim();
@@ -211,7 +214,13 @@ function parseDetail(rows) {
     });
     const docDate = toISODate(r[12]);
     if (docDate) {
-      completions.set(rgNo, { doc_wh: String(r[11] ?? '').trim() || null, completed_date: docDate });
+      const remark = cRemark < 0 ? '' : String(r[cRemark] ?? '').trim();
+      const prev = completions.get(rgNo);
+      completions.set(rgNo, {
+        doc_wh: String(r[11] ?? '').trim() || null,
+        completed_date: docDate,
+        remark: prev?.remark || remark || null,
+      });
     }
   }
   return { headers: [], items, completions: [...completions.entries()].map(([rg_no, c]) => ({ rg_no, ...c })) };
@@ -231,6 +240,7 @@ function parseClose(rows) {
   const cProdName = col(/ชื่อสินค้า/, 7);
   const cGood = col(/จำนวนดี|ดี \(ชิ้น\)|^ดี/, 8);
   const cDamaged = col(/จำนวนเสีย|เสีย \(ชิ้น\)|^เสีย/, 9);
+  const cRemark = col(/remark|หมายเหตุ/, -1); // ไม่มีคอลัมน์นี้ก็ได้ (-1 = ไม่อ่าน)
 
   const items = [];
   const completions = new Map(); // rgNo -> { completed_date } (เอาค่าล่าสุดต่อ RG)
@@ -246,7 +256,12 @@ function parseClose(rows) {
       invoice_no: null,
     });
     const doneDate = toISODate(r[cComplete]);
-    if (doneDate) completions.set(rgNo, { doc_wh: null, completed_date: doneDate });
+    // Remark: RG ใบเดียวแตกได้หลายแถว — เก็บ remark แถวแรกที่มีค่า (แถวอื่นมักเว้นว่าง)
+    const remark = cRemark < 0 ? '' : String(r[cRemark] ?? '').trim();
+    if (doneDate) {
+      const prev = completions.get(rgNo);
+      completions.set(rgNo, { doc_wh: null, completed_date: doneDate, remark: prev?.remark || remark || null });
+    }
   }
   return { headers: [], items, completions: [...completions.entries()].map(([rg_no, c]) => ({ rg_no, ...c })) };
 }
