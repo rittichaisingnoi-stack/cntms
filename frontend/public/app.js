@@ -323,7 +323,7 @@ VIEWS.myjobs = {
       <label class="jbar-f"><span>วันที่รับ</span>
         <input id="jbar-recv-date" type="date" class="in" max="${todayStr()}" title="วันที่รับสินค้าจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
       <label class="jbar-f"><span>วันกลับคลัง</span>
-        <input id="jbar-ret-date" type="date" class="in" max="${todayStr()}" title="วันนำสินค้ากลับคืนคลังจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
+        <input id="jbar-ret-date" type="date" class="in" title="วันนำสินค้ากลับคืนคลัง (ใส่วันล่วงหน้าได้ แต่ต้องไม่น้อยกว่าวันที่รับ)"/></label>
       <label class="jbar-f"><span>หมวด</span>
         <select id="jbar-cat" class="in" title="หมวด">${['<option value="">— เลือกหมวด —</option>'].concat(NOTE_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)).join('')}</select></label>
       <label class="jbar-f jbar-f-wide"><span>เหตุผล</span>
@@ -491,7 +491,7 @@ VIEWS.myjobs = {
       if (!recv && !ret && !category && !reason) { toast('กรุณากรอกอย่างน้อย 1 ช่อง'); return; }
       const today = todayStr();
       if (recv && recv > today) { toast('วันที่รับ: กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
-      if (ret && ret > today) { toast('วันกลับคลัง: กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
+      if (recv && ret && ret < recv) { toast('วันกลับคลังต้องไม่น้อยกว่าวันที่รับ'); return; }
       // หมวด/เหตุผลต้องมาคู่กันเสมอ
       if (reason && !category) { toast('กรุณาเลือกหมวด'); return; }
       if (category && !reason) { rea.classList.add('req'); rea.focus(); toast('เลือกหมวดแล้วต้องกรอกเหตุผล'); return; }
@@ -517,7 +517,7 @@ VIEWS.myjobs = {
         }
         toast('บันทึกสำเร็จ · ' + msgs.join(' · '));
         if (badDates.length) openModal(`<div class="d-no">⚠️ ข้ามวันที่ผิดลำดับ ${badDates.length} ออเดอร์</div>
-          <p class="hint">กติกา: วันกลับคลัง ≥ วันรับสินค้า · กรอกวันล่วงหน้าไม่ได้ (คีย์ย้อนหลังได้)</p>
+          <p class="hint">กติกา: วันกลับคลัง ≥ วันรับสินค้า (วันกลับคลังใส่ล่วงหน้าได้) · วันที่รับกรอกวันล่วงหน้าไม่ได้</p>
           <ul class="err" style="margin:6px 0 0 18px">${badDates.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>`);
         clearBarInputs();
         await loadOrders();   // ล้างรายการที่เลือก + ดึงข้อมูลใหม่
@@ -554,7 +554,7 @@ async function openVendorJob(o, reload) {
     <div class="row"><input id="rdate" type="date" class="in" max="${todayStr()}" value="${o.received_date ? String(o.received_date).slice(0,10) : ''}"/>
     <button class="btn primary" id="brecv" style="width:auto">บันทึกรับ</button></div>
     <label class="hint">วันนำสินค้ากลับคืนคลังจริง</label>
-    <div class="row"><input id="tdate" type="date" class="in" max="${todayStr()}" value="${o.returned_date ? String(o.returned_date).slice(0,10) : ''}"/>
+    <div class="row"><input id="tdate" type="date" class="in" title="ใส่วันล่วงหน้าได้ แต่ต้องไม่น้อยกว่าวันที่รับ" value="${o.returned_date ? String(o.returned_date).slice(0,10) : ''}"/>
     <button class="btn red" id="bret" style="width:auto">บันทึกกลับคลัง</button></div>`}
     <hr/>
     <div class="row" style="justify-content:space-between;align-items:center">

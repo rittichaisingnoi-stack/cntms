@@ -192,9 +192,9 @@ function dateOrderError(order, { received_date, returned_date }) {
   const day = (d) => (d ? String(d).slice(0, 10) : null); // เทียบเฉพาะวันที่ (yyyy-mm-dd)
   // ห้ามวันอนาคต — ตรวจเฉพาะค่าที่กรอกเข้ามารอบนี้ (ค่าเดิมใน DB ไม่ตรวจ ไม่งั้นแก้อะไรไม่ได้เลย)
   const today = todayTH();
-  const newRec = day(received_date), newRet = day(returned_date);
+  const newRec = day(received_date);
   if (newRec && newRec > today) return `วันที่รับสินค้า (${newRec}) เป็นวันล่วงหน้า — กรอกได้เมื่อทำเสร็จแล้ว`;
-  if (newRet && newRet > today) return `วันกลับคลัง (${newRet}) เป็นวันล่วงหน้า — กรอกได้เมื่อทำเสร็จแล้ว`;
+  // วันกลับคลัง: ใส่วันล่วงหน้าได้ (นัดหมายรอบรถ) ขอแค่ไม่น้อยกว่าวันที่รับ
 
   const rec = day(received_date ?? order.received_date);
   const ret = day(returned_date ?? order.returned_date);
