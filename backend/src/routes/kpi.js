@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase.js';
 const router = Router();
 
 // KPI 3 ช่วง (หน่วย: วัน)
-//  d1 = รับสินค้าแล้ว − มอบหมายแล้ว   (received_date − assigned_at)
+//  d1 = รับสินค้าแล้ว − วันที่พิมพ์    (received_date − rg_date)
 //  d2 = นำกลับคลังแล้ว − รับสินค้าแล้ว (returned_date − received_date)
 //  d3 = ปิดงาน − รับสินค้าแล้ว        (completed_date − received_date)
 
@@ -16,25 +16,26 @@ const days = (a, b) => {
   if (isNaN(da) || isNaN(db)) return null;
   return Math.round((db - da) / DAY);
 };
-// Vendor คีย์ย้อนหลังได้ → วันรับสินค้าอาจอยู่ก่อนวันมอบหมาย ทำให้ d1 ติดลบ
+// Vendor คีย์ย้อนหลังได้ → วันรับสินค้าอาจอยู่ก่อนวันที่พิมพ์ ทำให้ d1 ติดลบ
 //   เคสนี้คือไปรับของก่อนที่ออเดอร์จะเข้าระบบ นับเป็น 0 วัน (ไม่ใช่ค่าลบที่จะดึงค่าเฉลี่ยเพี้ยน)
 const nonNeg = (v) => (v == null ? null : Math.max(0, v));
 const kpiOf = (r) => ({
-  d1: nonNeg(days(r.assigned_at, r.received_date)),
+  d1: nonNeg(days(r.rg_date, r.received_date)),
   d2: days(r.received_date, r.returned_date),
   d3: days(r.received_date, r.completed_date),
 });
 
-// ดึง order ที่มอบหมายแล้วในช่วงวันที่ (filter ตามวันที่มอบหมาย) — vendor เห็นเฉพาะของตัวเอง
+// ดึง order ที่มอบหมายแล้วในช่วงวันที่ (filter ตามวันที่พิมพ์) — vendor เห็นเฉพาะของตัวเอง
 async function fetchRows(user, { from, to, vendor_id }) {
   let q = supabase.from('rg_headers')
-    .select('rg_no, vendor_id, sold_to_name, status, assigned_at, received_date, returned_date, completed_date')
+    .select('rg_no, vendor_id, sold_to_name, status, rg_date, assigned_at, received_date, returned_date, completed_date')
     .not('vendor_id', 'is', null);
   if (user.role === 'vendor') q = q.eq('vendor_id', user.id);
   else if (vendor_id) q = q.eq('vendor_id', vendor_id);
-  if (from) q = q.gte('assigned_at', from);
-  if (to) q = q.lte('assigned_at', to + 'T23:59:59');
-  q = q.order('assigned_at', { ascending: false }).limit(5000);
+  // rg_date เป็น date ล้วน — เทียบตรงๆ ไม่ต้องต่อเวลาท้ายวันเหมือน timestamptz
+  if (from) q = q.gte('rg_date', from);
+  if (to) q = q.lte('rg_date', to);
+  q = q.order('rg_date', { ascending: false }).limit(5000);
   const { data, error } = await q;
   if (error) throw error;
   return data || [];
@@ -63,7 +64,7 @@ function summarize(rows) {
       vendor_id,
       orders: list.length,
       completed: list.filter((r) => r.status === 'completed').length,
-      avg_assign_to_receive: avg(ks.map((k) => k.d1)),
+      avg_assign_to_receive: avg(ks.map((k) => k.d1)),   // วันที่พิมพ์ → รับสินค้า
       avg_receive_to_return: avg(ks.map((k) => k.d2)),
       avg_receive_to_complete: avg(ks.map((k) => k.d3)),
     });
@@ -113,7 +114,7 @@ router.get('/export', async (req, res) => {
         'Vendor': names.get(s.vendor_id) || `#${s.vendor_id}`,
         'จำนวนงาน': s.orders,
         'ปิดงานแล้ว': s.completed,
-        'มอบหมาย→รับสินค้า (วันเฉลี่ย)': s.avg_assign_to_receive,
+        'วันที่พิมพ์→รับสินค้า (วันเฉลี่ย)': s.avg_assign_to_receive,
         'รับสินค้า→กลับคลัง (วันเฉลี่ย)': s.avg_receive_to_return,
         'รับสินค้า→ปิดงาน (วันเฉลี่ย)': s.avg_receive_to_complete,
       }));
@@ -127,11 +128,12 @@ router.get('/export', async (req, res) => {
           'Vendor': names.get(r.vendor_id) || `#${r.vendor_id}`,
           'ร้านค้า': r.sold_to_name,
           'สถานะ': r.status,
+          'วันที่พิมพ์': r.rg_date || '',
           'วันที่มอบหมาย': r.assigned_at ? String(r.assigned_at).slice(0, 10) : '',
           'วันที่รับสินค้า': r.received_date || '',
           'วันที่กลับคลัง': r.returned_date || '',
           'วันที่ปิดงาน': r.completed_date || '',
-          'มอบหมาย→รับ (วัน)': k.d1,
+          'วันที่พิมพ์→รับ (วัน)': k.d1,
           'รับ→กลับคลัง (วัน)': k.d2,
           'รับ→ปิดงาน (วัน)': k.d3,
         };

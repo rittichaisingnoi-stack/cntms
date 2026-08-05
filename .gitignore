@@ -18,3 +18,6 @@ Thumbs.db
 
 # local machine settings
 .claude/settings.local.json
+
+# สำเนาสำรองก่อนแก้ไฟล์ (เก็บไว้ในเครื่องเท่านั้น — git history ทำหน้าที่นี้อยู่แล้ว)
+backup/

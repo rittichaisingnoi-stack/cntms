@@ -55,8 +55,24 @@ router.get('/', async (req, res) => {
 
   const { data, error, count } = await query;
   if (error) return res.status(500).json({ error: error.message });
-  res.json({ data, page, pageSize, total: count ?? 0 });
+  res.json({ data: await withVendorNotes(data), page, pageSize, total: count ?? 0 });
 });
+
+// แนบหมวด+เหตุผลของ vendor เข้าไปในแต่ละออเดอร์ (o.vendor_notes = [{category, reason}])
+// best-effort — ถ้ายังไม่ได้รัน vendor_notes.sql ก็คืนออเดอร์เดิมพร้อม list ว่าง
+async function withVendorNotes(rows) {
+  const list = rows || [];
+  if (!list.length) return list;
+  const { data: notes } = await supabase
+    .from('rg_vendor_notes').select('rg_no, category, reason, return_qty, unit')
+    .in('rg_no', list.map((o) => o.rg_no)).order('id', { ascending: true });
+  const byRg = new Map();
+  for (const n of notes || []) {
+    if (!byRg.has(n.rg_no)) byRg.set(n.rg_no, []);
+    byRg.get(n.rg_no).push({ category: n.category, reason: n.reason, return_qty: n.return_qty, unit: n.unit });
+  }
+  return list.map((o) => ({ ...o, vendor_notes: byRg.get(o.rg_no) || [] }));
+}
 
 // GET /api/orders/:rgNo/tracking — ประวัติสถานะ
 router.get('/:rgNo/tracking', async (req, res) => {
@@ -259,14 +275,15 @@ router.put('/bulk-vendor-dates', requireRole('vendor'), async (req, res) => {
   res.json({ updated, locked, bad_dates: badDates });
 });
 
-// PUT /api/orders/bulk-vendor-notes  (vendor) — { rg_nos, rows:[{category,reason}] }
-//   แทนที่หมวด/เหตุผล ทั้งชุดของทุกออเดอร์ที่เลือก (เลือกหมวดแล้วต้องกรอกเหตุผล)
+// PUT /api/orders/bulk-vendor-notes  (vendor) — { rg_nos, rows:[{category,reason,return_qty,unit}] }
+//   แทนที่หมวด/เหตุผล ทั้งชุดของทุกออเดอร์ที่เลือก (เหตุผลบังคับเฉพาะหมวด "อื่นๆ")
+//   จำนวน/หน่วยที่ไม่กรอกมา = ถือว่าตรง คงค่าเดิมของแต่ละออเดอร์ไว้
 router.put('/bulk-vendor-notes', requireRole('vendor'), async (req, res) => {
   const { rg_nos } = req.body || {};
   if (!Array.isArray(rg_nos) || !rg_nos.length) return res.status(400).json({ error: 'กรุณาเลือกออเดอร์' });
   const { rows, error: ve } = cleanNotes(req.body?.rows);
   if (ve) return res.status(400).json({ error: ve });
-  if (!rows.length) return res.status(400).json({ error: 'กรุณาเลือกหมวดและกรอกเหตุผล' });
+  if (!rows.length) return res.status(400).json({ error: 'กรุณาเลือกหมวด' });
 
   // เฉพาะงานของ vendor นี้
   let sel = supabase.from('rg_headers').select('rg_no').in('rg_no', rg_nos);
@@ -277,10 +294,27 @@ router.put('/bulk-vendor-notes', requireRole('vendor'), async (req, res) => {
   const notMine = rg_nos.length - mine.length;
   if (!mine.length) return res.status(400).json({ error: 'ไม่พบออเดอร์ของคุณตามที่เลือก' });
 
+  // ค่าเดิมของจำนวน/หน่วย — ช่องที่เว้นว่างถือว่าตรง คงค่าเดิมของแต่ละออเดอร์ไว้
+  const prevQty = new Map();   // `${rg_no}|${category}` -> { return_qty, unit }
+  const { data: olds } = await supabase
+    .from('rg_vendor_notes').select('rg_no, category, return_qty, unit').in('rg_no', mine);
+  for (const p of olds || []) {
+    const k = `${p.rg_no}|${p.category}`;
+    if (!prevQty.has(k)) prevQty.set(k, { return_qty: p.return_qty, unit: p.unit });
+  }
+
   let updated = 0, saved = 0, insertErr = null;
   for (const rgNo of mine) {
     await supabase.from('rg_vendor_notes').delete().eq('rg_no', rgNo);
-    const payload = rows.map((n) => ({ ...n, rg_no: rgNo, created_by: req.user.id }));
+    const payload = rows.map((n) => {
+      const prev = prevQty.get(`${rgNo}|${n.category}`) || {};
+      return {
+        rg_no: rgNo, created_by: req.user.id,
+        category: n.category, reason: n.reason,
+        return_qty: 'return_qty' in n ? n.return_qty : (prev.return_qty ?? null),
+        unit: 'unit' in n ? n.unit : (prev.unit ?? null),
+      };
+    });
     const { error } = await supabase.from('rg_vendor_notes').insert(payload);
     if (error) { insertErr = error; continue; }
     saved += rows.length; updated++;
@@ -305,7 +339,7 @@ router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
   const notesByRg = new Map();
   if (rgNos.length) {
     const { data: notes } = await supabase
-      .from('rg_vendor_notes').select('rg_no, category, reason')
+      .from('rg_vendor_notes').select('rg_no, category, reason, return_qty, unit')
       .in('rg_no', rgNos).order('id', { ascending: true });
     for (const n of notes || []) {
       if (!notesByRg.has(n.rg_no)) notesByRg.set(n.rg_no, []);
@@ -316,7 +350,7 @@ router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
   const fmt = (d) => (d ? String(d).slice(0, 10).split('-').reverse().join('/') : '');
   const rows = [];
   for (const h of heads || []) {
-    const ns = notesByRg.get(h.rg_no) || [{ category: '', reason: '' }];
+    const ns = notesByRg.get(h.rg_no) || [{ category: '', reason: '', return_qty: '', unit: '' }];
     ns.forEach((n, i) => rows.push({
       'เลขที่ RG': h.rg_no,
       'สถานะ': h.status,
@@ -330,12 +364,15 @@ router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
       'วันที่กลับคลัง (dd/mm/yyyy)': i === 0 ? fmt(h.returned_date) : '',
       'หมวด': n.category,
       'เหตุผล': n.reason,
+      'จำนวนที่รับคืน': n.return_qty ?? '',
+      'หน่วย': n.unit || '',
     }));
   }
   const ws = xlsx.utils.json_to_sheet(rows.length ? rows : [{
     'เลขที่ RG': '', 'สถานะ': '', 'ร้านค้า': '', 'อำเภอ': '', 'จังหวัด': '',
     'กล่อง': '', 'ชิ้น': '', 'วันที่รับสินค้า (dd/mm/yyyy)': '',
     'วันที่กลับคลัง (dd/mm/yyyy)': '', 'หมวด': '', 'เหตุผล': '',
+    'จำนวนที่รับคืน': '', 'หน่วย': '',
   }]);
   const wb = xlsx.utils.book_new();
   xlsx.utils.book_append_sheet(wb, ws, 'MyJobs');
@@ -365,6 +402,8 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
   const cRet = hdr.findIndex((h) => /กลับคลัง|กลับคืน/i.test(h));
   const cCat = hdr.findIndex((h) => /หมวด/i.test(h));
   const cRea = hdr.findIndex((h) => /เหตุผล/i.test(h));
+  const cQty = hdr.findIndex((h) => /จำนวนที่รับคืน/i.test(h));
+  const cUnit = hdr.findIndex((h) => /^\s*หน่วย\s*$/i.test(h));
   if (cRecv < 0 && cRet < 0 && cCat < 0 && cRea < 0) {
     return res.status(400).json({ error: 'ไม่พบหัวคอลัมน์วันที่ หรือ หมวด/เหตุผล ในไฟล์' });
   }
@@ -401,9 +440,23 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
       if (!notesByRg.has(rgNo)) notesByRg.set(rgNo, []);
       const category = cCat >= 0 ? String(r[cCat] ?? '').trim() : '';
       const reason = cRea >= 0 ? String(r[cRea] ?? '').trim() : '';
-      if (!category && !reason) continue;                 // แถวว่าง = ล้างหมวดของ RG นี้
-      if (!category || !reason) { badRow++; continue; }   // ไม่ครบ = ข้ามแถว
-      notesByRg.get(rgNo).push({ category, reason });
+      const qtyRaw = cQty >= 0 ? String(r[cQty] ?? '').trim() : '';
+      const unit = cUnit >= 0 ? String(r[cUnit] ?? '').trim() : '';
+      if (!category && !reason && !qtyRaw && !unit) continue;  // แถวว่าง = ล้างหมวดของ RG นี้
+      if (!category) { badRow++; continue; }                   // ไม่มีหมวด = ข้ามแถว
+      if (category === 'อื่นๆ' && !reason) { badRow++; continue; }  // อื่นๆ ต้องมีเหตุผล
+      // จำนวนต้องเป็นตัวเลข ≥ 0 (รองรับ 1,234) — ใส่ผิดรูปแบบ = ข้ามแถว
+      let return_qty = null;
+      if (qtyRaw) {
+        const n = Number(qtyRaw.replace(/,/g, ''));
+        if (!isFinite(n) || n < 0) { badRow++; continue; }
+        return_qty = n;
+      }
+      // ไม่กรอกจำนวน/หน่วยมา = ถือว่าตรง ไม่ต้องอัปเดต — เก็บค่าเดิมไว้ (ดูตอน merge ด้านล่าง)
+      const note = { category, reason };
+      if (qtyRaw) note.return_qty = return_qty;
+      if (unit) note.unit = unit;
+      notesByRg.get(rgNo).push(note);
     }
   }
 
@@ -423,12 +476,33 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
   }
 
   // ---- แทนที่หมวด/เหตุผล (เฉพาะ RG ที่ปรากฏในไฟล์) ----
+  // ค่าเดิมของจำนวน/หน่วย — ใช้เติมกรณีไฟล์ไม่ได้กรอกมา (ถือว่าตรง ไม่ต้องอัปเดต)
+  const prevQty = new Map();   // `${rg_no}|${category}` -> { return_qty, unit }
+  if (seenNotes.size) {
+    const { data: olds } = await supabase
+      .from('rg_vendor_notes').select('rg_no, category, return_qty, unit')
+      .in('rg_no', [...seenNotes]);
+    for (const p of olds || []) {
+      const k = `${p.rg_no}|${p.category}`;
+      if (!prevQty.has(k)) prevQty.set(k, { return_qty: p.return_qty, unit: p.unit });
+    }
+  }
+
   let notesUpdated = 0, notesSaved = 0;
   for (const rgNo of seenNotes) {
     const list = notesByRg.get(rgNo) || [];
     await supabase.from('rg_vendor_notes').delete().eq('rg_no', rgNo);
     if (list.length) {
-      const payload = list.map((n) => ({ ...n, rg_no: rgNo, created_by: req.user.id }));
+      const payload = list.map((n) => {
+        const prev = prevQty.get(`${rgNo}|${n.category}`) || {};
+        return {
+          rg_no: rgNo, created_by: req.user.id,
+          category: n.category, reason: n.reason,
+          // ช่องว่างในไฟล์ = คงค่าเดิมไว้ (ไม่ล้างเป็น null)
+          return_qty: 'return_qty' in n ? n.return_qty : (prev.return_qty ?? null),
+          unit: 'unit' in n ? n.unit : (prev.unit ?? null),
+        };
+      });
       const { error } = await supabase.from('rg_vendor_notes').insert(payload);
       if (error) continue;
       notesSaved += list.length;
@@ -460,10 +534,21 @@ function cleanNotes(raw) {
   for (const r of raw) {
     const category = String(r?.category ?? '').trim();
     const reason = String(r?.reason ?? '').trim();
-    if (!category && !reason) continue;                 // แถวว่าง — ข้าม
+    const qtyRaw = String(r?.return_qty ?? '').trim();
+    const unit = String(r?.unit ?? '').trim();
+    if (!category && !reason && !qtyRaw && !unit) continue;   // แถวว่าง — ข้าม
     if (!category) return { error: 'กรุณาเลือกหมวดให้ครบทุกแถว' };
-    if (!reason) return { error: 'เลือกหมวดแล้วต้องกรอกเหตุผลให้ครบทุกแถว' };
-    rows.push({ category, reason });
+    // เหตุผลบังคับเฉพาะหมวด "อื่นๆ" — หมวดอื่นกรอกหรือไม่ก็ได้
+    if (category === 'อื่นๆ' && !reason) return { error: 'หมวดอื่นๆ ต้องกรอกเหตุผลให้ครบทุกแถว' };
+    // ไม่กรอกจำนวน/หน่วยมา = ถือว่าตรง ไม่ต้องอัปเดต — ไม่ใส่ key ไว้เลย ให้ผู้เรียกเติมค่าเดิม
+    const row = { category, reason };
+    if (qtyRaw) {
+      const n = Number(qtyRaw.replace(/,/g, ''));
+      if (!isFinite(n) || n < 0) return { error: 'จำนวนที่รับคืนต้องเป็นตัวเลขไม่ติดลบ' };
+      row.return_qty = n;
+    }
+    if (unit) row.unit = unit;
+    rows.push(row);
   }
   return { rows };
 }
@@ -473,7 +558,7 @@ router.get('/:rgNo/vendor-notes', requireRole('vendor'), async (req, res) => {
   const chk = await ownOrder(req);
   if (chk.err) return res.status(chk.err).json({ error: chk.msg });
   const { data, error } = await supabase
-    .from('rg_vendor_notes').select('id, category, reason')
+    .from('rg_vendor_notes').select('id, category, reason, return_qty, unit')
     .eq('rg_no', req.params.rgNo).order('id', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data || []);
@@ -488,7 +573,12 @@ router.put('/:rgNo/vendor-notes', requireRole('vendor'), async (req, res) => {
 
   await supabase.from('rg_vendor_notes').delete().eq('rg_no', req.params.rgNo);
   if (rows.length) {
-    const payload = rows.map((r) => ({ ...r, rg_no: req.params.rgNo, created_by: req.user.id }));
+    // หน้าจอนี้เห็นทุกช่องอยู่แล้ว — ลบค่าในช่องแล้วบันทึก = ตั้งใจล้างจริง (เก็บเป็น null)
+    const payload = rows.map((r) => ({
+      rg_no: req.params.rgNo, created_by: req.user.id,
+      category: r.category, reason: r.reason,
+      return_qty: r.return_qty ?? null, unit: r.unit ?? null,
+    }));
     const { error } = await supabase.from('rg_vendor_notes').insert(payload);
     if (error) return res.status(500).json({ error: error.message });
   }

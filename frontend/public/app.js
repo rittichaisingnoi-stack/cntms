@@ -35,9 +35,19 @@ const STATUS = {
 const statusChip = (s) => `<span class="chip st st-${s}">${STATUS[s] || s || 'รอดำเนินการ'}</span>`;
 
 // ---------- หมวดสำหรับ dropdown ในตารางหมวด+เหตุผล (Vendor) ----------
-// TODO: แก้รายการนี้ตามหมวดที่ต้องการ (แต่ละแถวเลือกหมวด → บังคับกรอกเหตุผล)
+// TODO: แก้รายการนี้ตามหมวดที่ต้องการ (เหตุผลบังคับเฉพาะหมวด "อื่นๆ")
 // หมวดของ Vendor — โหลดจาก settings ตอน login (แก้ได้ในแท็บ "จัดการผู้ใช้")
 let NOTE_CATEGORIES = ['สินค้าชำรุด', 'สินค้าหมดอายุ', 'ลด Stock', 'อื่นๆ'];
+// หมวดของออเดอร์ (จาก vendor_notes) — แสดงเป็นชิป, hover เห็นเหตุผล
+function noteCats(o) {
+  const ns = o.vendor_notes || [];
+  if (!ns.length) return '<span class="muted">-</span>';
+  return ns.map((n) => {
+    const qty = n.return_qty != null && n.return_qty !== '' ? ` ${n.return_qty}${n.unit ? ' ' + n.unit : ''}` : '';
+    const tip = [n.reason || n.category, qty.trim() && `รับคืน ${qty.trim()}`].filter(Boolean).join(' · ');
+    return `<span class="chip" title="${esc(tip)}">${esc(n.category)}${esc(qty)}</span>`;
+  }).join(' ');
+}
 async function loadNoteCategories() {
   try {
     const list = await api('/lookup/note-categories');
@@ -309,9 +319,9 @@ VIEWS.myjobs = {
         <div class="row">
           <a class="btn ghost" id="jload" style="width:auto">⬇️ Load Data Excel</a>
           <input id="jfile" type="file" accept=".xlsx,.xls" class="in" style="flex:1"/>
-          <button class="btn primary" id="jupload" style="width:auto">⬆️ Upload วันที่ + หมวด/เหตุผล</button>
+          <button class="btn primary" id="jupload" style="width:auto">⬆️ Upload วันที่ + หมวด/เหตุผล/จำนวน</button>
         </div>
-        <p class="hint">ไฟล์เดียวรวมทั้ง วันที่รับ/กลับคลัง และ หมวด/เหตุผล (1 ออเดอร์แตกได้หลายแถวตามจำนวนหมวด)
+        <p class="hint">ไฟล์เดียวรวมทั้ง วันที่รับ/กลับคลัง และ หมวด/เหตุผล/จำนวนที่รับคืน/หน่วย (1 ออเดอร์แตกได้หลายแถวตามจำนวนหมวด)
         · <b>Load Data Excel จะดึงตามตัวกรองด้านบน</b> (ค้นหา/สถานะ)</p>
         <div id="jmsg"></div>
       </div>
@@ -327,7 +337,12 @@ VIEWS.myjobs = {
       <label class="jbar-f"><span>หมวด</span>
         <select id="jbar-cat" class="in" title="หมวด">${['<option value="">— เลือกหมวด —</option>'].concat(NOTE_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)).join('')}</select></label>
       <label class="jbar-f jbar-f-wide"><span>เหตุผล</span>
-        <input id="jbar-rea" class="in" placeholder="เลือกหมวดแล้วต้องกรอก" title="เหตุผล"/></label>
+        <input id="jbar-rea" class="in" placeholder="บังคับเฉพาะหมวดอื่นๆ" title="เหตุผล (บังคับเฉพาะหมวดอื่นๆ)"/></label>
+      <label class="jbar-f"><span>จำนวนที่รับคืน</span>
+        <input id="jbar-qty" class="in" type="number" min="0" step="any" placeholder="จำนวน" title="จำนวนที่รับคืน"/></label>
+      <label class="jbar-f"><span>หน่วย</span>
+        <input id="jbar-unit" class="in" list="unit-list-bar" placeholder="เช่น กล่อง" title="หน่วย"/></label>
+      <datalist id="unit-list-bar">${['กล่อง', 'ชิ้น', 'ลัง', 'แพ็ค', 'ถุง'].map((u) => `<option value="${u}"></option>`).join('')}</datalist>
       <button class="btn primary" id="jbar-save">💾 บันทึก</button>
     </div></div>`);
 
@@ -367,7 +382,7 @@ VIEWS.myjobs = {
             <th><input type="checkbox" class="selall" title="เลือกทั้งหมด"/></th>
             <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th>
             <th>อำเภอ</th><th>จังหวัด</th>
-            <th class="num">กล่อง</th>
+            <th class="num">กล่อง</th><th>หมวด</th>
             <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่มอบหมาย</th><th class="dt">วันที่รับ</th><th class="dt">วันกลับคลัง</th><th></th>
           </tr></thead><tbody></tbody></table></div>`);
         const tb = $('tbody', tblWrap);
@@ -384,6 +399,7 @@ VIEWS.myjobs = {
             <td>${esc(o.district || '-')}</td>
             <td>${esc(o.province || '-')}</td>
             <td class="num">${o.qty_boxes ?? 0}</td>
+            <td class="l">${noteCats(o)}</td>
             ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.received_date)}${dcell(o.returned_date)}
             <td class="edit">✏️</td></tr>`);
           const cb = $('.osel', tr);
@@ -478,6 +494,8 @@ VIEWS.myjobs = {
       $('#jbar-ret-date', w).value = '';
       $('#jbar-cat', w).value = '';
       const rea = $('#jbar-rea', w); rea.value = ''; rea.classList.remove('req');
+      const qty = $('#jbar-qty', w); qty.value = ''; qty.classList.remove('req');
+      $('#jbar-unit', w).value = '';
     };
 
     // ปุ่มเดียวบันทึกทั้ง 4 ค่า — ช่องไหนไม่กรอกก็ข้ามไป ไม่ไปทับค่าเดิมในฐานข้อมูล
@@ -487,15 +505,19 @@ VIEWS.myjobs = {
       const category = $('#jbar-cat', w).value.trim();
       const rea = $('#jbar-rea', w);
       const reason = rea.value.trim();
+      const qtyEl = $('#jbar-qty', w);
+      const return_qty = qtyEl.value.trim();
+      const unit = $('#jbar-unit', w).value.trim();
 
-      if (!recv && !ret && !category && !reason) { toast('กรุณากรอกอย่างน้อย 1 ช่อง'); return; }
+      if (!recv && !ret && !category && !reason && !return_qty && !unit) { toast('กรุณากรอกอย่างน้อย 1 ช่อง'); return; }
       const today = todayStr();
       if (recv && recv > today) { toast('วันที่รับ: กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
       if (recv && ret && ret < recv) { toast('วันกลับคลังต้องไม่น้อยกว่าวันที่รับ'); return; }
-      // หมวด/เหตุผลต้องมาคู่กันเสมอ
-      if (reason && !category) { toast('กรุณาเลือกหมวด'); return; }
-      if (category && !reason) { rea.classList.add('req'); rea.focus(); toast('เลือกหมวดแล้วต้องกรอกเหตุผล'); return; }
-      rea.classList.remove('req');
+      // ต้องมีหมวดเสมอถ้ากรอกเหตุผล — เหตุผลบังคับเฉพาะหมวด "อื่นๆ"
+      if ((reason || return_qty || unit) && !category) { toast('กรุณาเลือกหมวด'); return; }
+      if (category === 'อื่นๆ' && !reason) { rea.classList.add('req'); rea.focus(); toast('หมวดอื่นๆ ต้องกรอกเหตุผล'); return; }
+      if (return_qty && !(Number(return_qty) >= 0)) { qtyEl.classList.add('req'); qtyEl.focus(); toast('จำนวนที่รับคืนต้องเป็นตัวเลขไม่ติดลบ'); return; }
+      rea.classList.remove('req'); qtyEl.classList.remove('req');
 
       const btn = $('#jbar-save', w); btn.disabled = true;
       const msgs = [];
@@ -508,10 +530,10 @@ VIEWS.myjobs = {
             + (r.locked ? ` (ข้ามงานปิดแล้ว ${r.locked})` : '')
             + (badDates.length ? ` (ข้ามวันที่ผิดลำดับ ${badDates.length})` : ''));
         }
-        if (category && reason) {
+        if (category) {
           const r = await api('/orders/bulk-vendor-notes', {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rg_nos: [...selected], rows: [{ category, reason }] }),
+            body: JSON.stringify({ rg_nos: [...selected], rows: [{ category, reason, return_qty, unit }] }),
           });
           msgs.push(`หมวด+เหตุผล ${r.updated} รายการ` + (r.not_mine ? ` (ข้ามไม่ใช่งานคุณ ${r.not_mine})` : ''));
         }
@@ -527,10 +549,12 @@ VIEWS.myjobs = {
     };
     $('#jbar-cat', w).onchange = () => {
       const rea = $('#jbar-rea', w);
-      rea.classList.toggle('req', !!$('#jbar-cat', w).value && !rea.value.trim());
-      if ($('#jbar-cat', w).value) rea.focus();
+      const isOther = $('#jbar-cat', w).value === 'อื่นๆ';
+      rea.classList.toggle('req', isOther && !rea.value.trim());
+      if (isOther) rea.focus();
     };
     $('#jbar-rea', w).oninput = () => $('#jbar-rea', w).classList.remove('req');
+    $('#jbar-qty', w).oninput = () => $('#jbar-qty', w).classList.remove('req');
 
     $('#jgrpby', w).onchange = render;
     $('#jstatus', w).onchange = () => { syncLoadHref(); loadOrders(); };
@@ -558,12 +582,14 @@ async function openVendorJob(o, reload) {
     <button class="btn red" id="bret" style="width:auto">บันทึกกลับคลัง</button></div>`}
     <hr/>
     <div class="row" style="justify-content:space-between;align-items:center">
-      <label class="hint" style="margin:0">หมวด + เหตุผล (เลือกหมวดแล้วต้องกรอกเหตุผล)</label>
+      <label class="hint" style="margin:0">หมวด + เหตุผล + จำนวนที่รับคืน (เหตุผลบังคับเฉพาะหมวด "อื่นๆ")</label>
       <button class="btn ghost" id="n-add" style="width:auto">＋ เพิ่มแถว</button>
     </div>
     <div class="table-scroll"><table class="otable" id="ntbl">
-      <thead><tr><th style="width:38%">หมวด</th><th>เหตุผล</th><th style="width:34px"></th></tr></thead>
+      <thead><tr><th style="width:26%">หมวด</th><th>เหตุผล</th>
+        <th style="width:15%">จำนวนที่รับคืน</th><th style="width:15%">หน่วย</th><th style="width:34px"></th></tr></thead>
       <tbody></tbody></table></div>
+    <datalist id="unit-list">${['กล่อง', 'ชิ้น', 'ลัง', 'แพ็ค', 'ถุง'].map((u) => `<option value="${u}"></option>`).join('')}</datalist>
     <div class="row"><button class="btn primary" id="n-save" style="width:auto">บันทึกหมวด+เหตุผล</button><div id="n-msg" class="hint" style="align-self:center"></div></div>
     <div id="m-err" class="err"></div>`);
   const save = (body) => async () => {
@@ -584,15 +610,18 @@ async function openVendorJob(o, reload) {
   const ntb = $('#ntbl tbody');
   const optHtml = (sel) => ['<option value="">— เลือกหมวด —</option>']
     .concat(NOTE_CATEGORIES.map((c) => `<option value="${esc(c)}" ${c === sel ? 'selected' : ''}>${esc(c)}</option>`)).join('');
-  function addRow(category = '', reason = '') {
+  function addRow(category = '', reason = '', return_qty = '', unit = '') {
     const tr = el(`<tr>
       <td><select class="in n-cat">${optHtml(category)}</select></td>
-      <td><input class="in n-rea" placeholder="กรอกเหตุผล" value="${esc(reason)}"/></td>
+      <td><input class="in n-rea" placeholder="บังคับเฉพาะหมวดอื่นๆ" value="${esc(reason)}"/></td>
+      <td><input class="in n-qty num" type="number" min="0" step="any" placeholder="จำนวน" value="${esc(return_qty ?? '')}"/></td>
+      <td><input class="in n-unit" list="unit-list" placeholder="เช่น กล่อง" value="${esc(unit ?? '')}"/></td>
       <td><button class="btn red n-del" style="width:auto;padding:4px 8px" title="ลบแถว">✕</button></td></tr>`);
     const rea = $('.n-rea', tr), cat = $('.n-cat', tr);
-    // เลือกหมวดแล้ว = บังคับกรอกเหตุผล
-    cat.onchange = () => { rea.classList.toggle('req', !!cat.value && !rea.value.trim()); if (cat.value) rea.focus(); };
+    // เหตุผลบังคับเฉพาะหมวด "อื่นๆ"
+    cat.onchange = () => { rea.classList.toggle('req', cat.value === 'อื่นๆ' && !rea.value.trim()); if (cat.value === 'อื่นๆ') rea.focus(); };
     rea.oninput = () => rea.classList.remove('req');
+    $('.n-qty', tr).oninput = (e) => e.target.classList.remove('req');
     $('.n-del', tr).onclick = () => tr.remove();
     ntb.appendChild(tr);
     return tr;
@@ -604,10 +633,13 @@ async function openVendorJob(o, reload) {
     for (const tr of ntb.querySelectorAll('tr')) {
       const category = $('.n-cat', tr).value.trim();
       const reason = $('.n-rea', tr).value.trim();
-      if (!category && !reason) continue;
-      if (category && !reason) { $('.n-rea', tr).classList.add('req'); $('#n-msg').innerHTML = '<span class="err">เลือกหมวดแล้วต้องกรอกเหตุผล</span>'; return; }
-      if (!category && reason) { $('#n-msg').innerHTML = '<span class="err">กรุณาเลือกหมวดให้ครบ</span>'; return; }
-      rows.push({ category, reason });
+      const return_qty = $('.n-qty', tr).value.trim();
+      const unit = $('.n-unit', tr).value.trim();
+      if (!category && !reason && !return_qty && !unit) continue;
+      if (category === 'อื่นๆ' && !reason) { $('.n-rea', tr).classList.add('req'); $('#n-msg').innerHTML = '<span class="err">หมวดอื่นๆ ต้องกรอกเหตุผล</span>'; return; }
+      if (!category) { $('#n-msg').innerHTML = '<span class="err">กรุณาเลือกหมวดให้ครบ</span>'; return; }
+      if (return_qty && !(Number(return_qty) >= 0)) { $('.n-qty', tr).classList.add('req'); $('#n-msg').innerHTML = '<span class="err">จำนวนที่รับคืนต้องเป็นตัวเลขไม่ติดลบ</span>'; return; }
+      rows.push({ category, reason, return_qty, unit });
     }
     $('#n-msg').textContent = 'กำลังบันทึก…';
     try {
@@ -622,7 +654,7 @@ async function openVendorJob(o, reload) {
   // โหลดหมวด+เหตุผลเดิม
   try {
     const notes = await api(`/orders/${encodeURIComponent(o.rg_no)}/vendor-notes`);
-    if (notes.length) notes.forEach((n) => addRow(n.category, n.reason));
+    if (notes.length) notes.forEach((n) => addRow(n.category, n.reason, n.return_qty, n.unit));
     else addRow();
   } catch { addRow(); }
 }
@@ -1008,7 +1040,7 @@ VIEWS.users = {
 
       <div class="card"><h4>เกณฑ์ KPI (ค่าเฉลี่ยเกินกี่วัน = ขึ้นสีแดง)</h4>
         <p class="hint">ตั้งแยกได้ 3 ช่วง · มีผลกับตาราง/การ์ด KPI ทั้งระบบทันทีหลังบันทึก (ต้องรีเฟรชหน้าอื่นที่เปิดค้างไว้)</p>
-        <label class="hint">1️⃣ มอบหมาย → รับสินค้า (วัน)</label>
+        <label class="hint">1️⃣ วันที่พิมพ์ → รับสินค้า (วัน)</label>
         <input id="kl_d1" class="in" type="number" min="1" step="0.5"/>
         <label class="hint">2️⃣ รับสินค้า → นำกลับคลัง (วัน)</label>
         <input id="kl_d2" class="in" type="number" min="1" step="0.5"/>
@@ -1493,10 +1525,10 @@ VIEWS.kpi = {
   render: () => {
     const w = el(`<div class="view wide"><h3>KPI ระยะเวลาการทำงาน (หน่วย: วัน)</h3>
       <p class="hint">นับจำนวนวันที่ใช้ในแต่ละช่วง — ยิ่งน้อยยิ่งดี · ค่าเฉลี่ยเกินเกณฑ์ (${kpiLimitText()}) จะขึ้น<span class="kpi-bad">สีแดง</span><br/>
-      1️⃣ ตั้งแต่มอบหมาย จนรับสินค้า · 2️⃣ ตั้งแต่รับสินค้า จนนำกลับคลัง · 3️⃣ ตั้งแต่รับสินค้า จนปิดงาน</p>
+      1️⃣ ตั้งแต่วันที่พิมพ์ จนรับสินค้า · 2️⃣ ตั้งแต่รับสินค้า จนนำกลับคลัง · 3️⃣ ตั้งแต่รับสินค้า จนปิดงาน</p>
       <div class="card filter-row">
-        <input id="kfrom" type="date" class="in" title="ตั้งแต่วันที่มอบหมาย"/>
-        <input id="kto" type="date" class="in" title="ถึงวันที่มอบหมาย"/>
+        <input id="kfrom" type="date" class="in" title="ตั้งแต่วันที่พิมพ์"/>
+        <input id="kto" type="date" class="in" title="ถึงวันที่พิมพ์"/>
         <button class="btn primary" id="kgo">ค้นหา</button>
         <button class="btn ghost" id="kexp-sum">⬇️ Export สรุป</button>
         <button class="btn ghost" id="kexp-ord">⬇️ Export รายออเดอร์</button>
@@ -1521,7 +1553,7 @@ VIEWS.kpi = {
         if (!vendors.length) { box.innerHTML = '<div class="empty">ยังไม่มีงานที่ถูกมอบหมายในช่วงนี้</div>'; return; }
         const tbl = el(`<div class="table-scroll"><table class="otable">
           <thead><tr><th>Vendor</th><th class="num">จำนวนงาน</th><th class="num">ปิดงานแล้ว</th>
-          <th class="num">มอบหมาย→รับ (เฉลี่ย)</th><th class="num">รับ→กลับคลัง (เฉลี่ย)</th><th class="num">รับ→ปิดงาน (เฉลี่ย)</th>
+          <th class="num">วันที่พิมพ์→รับ (เฉลี่ย)</th><th class="num">รับ→กลับคลัง (เฉลี่ย)</th><th class="num">รับ→ปิดงาน (เฉลี่ย)</th>
           </tr></thead><tbody></tbody></table></div>`);
         const tb = $('tbody', tbl);
         for (const v of vendors) {
@@ -1550,8 +1582,8 @@ VIEWS.kpi = {
         if (!rows.length) { box.innerHTML = '<div class="empty">ไม่มีรายการ</div>'; return; }
         const tbl = el(`<div class="table-scroll"><table class="otable">
           <thead><tr><th>เลขที่ RG</th><th>Vendor</th><th>ร้านค้า</th><th>สถานะ</th>
-          <th>มอบหมาย</th><th>รับสินค้า</th><th>กลับคลัง</th><th>ปิดงาน</th>
-          <th class="num" title="ตั้งแต่มอบหมาย จนรับสินค้า">1️⃣ มอบหมาย→รับ</th>
+          <th>วันที่พิมพ์</th><th>มอบหมาย</th><th>รับสินค้า</th><th>กลับคลัง</th><th>ปิดงาน</th>
+          <th class="num" title="ตั้งแต่วันที่พิมพ์ จนรับสินค้า">1️⃣ วันที่พิมพ์→รับ</th>
           <th class="num" title="ตั้งแต่รับสินค้า จนนำกลับคลัง">2️⃣ รับ→กลับคลัง</th>
           <th class="num" title="ตั้งแต่รับสินค้า จนปิดงาน">3️⃣ รับ→ปิดงาน</th>
           </tr></thead><tbody></tbody></table></div>`);
@@ -1562,6 +1594,7 @@ VIEWS.kpi = {
             <td>${esc(r.vendor_name)}</td>
             <td class="l soldto">${esc(r.sold_to_name || '-')}</td>
             <td>${statusChip(r.status)}</td>
+            <td>${r.rg_date ? fmtDate(r.rg_date) : '-'}</td>
             <td>${r.assigned_at ? fmtDate(r.assigned_at) : '-'}</td>
             <td>${r.received_date ? fmtDate(r.received_date) : '-'}</td>
             <td>${r.returned_date ? fmtDate(r.returned_date) : '-'}</td>
@@ -1625,7 +1658,7 @@ function supervisorDashboard() {
         <div class="scard-head"><h4>ผลงาน Vendor</h4><span class="scard-note">เวลาเฉลี่ย (วัน) · เกินเกณฑ์ (${kpiLimitText()}) ขึ้นสีแดง</span></div>
         <div class="stable-wrap"><table class="stable" id="s-vtable">
           <thead><tr><th>Vendor</th><th class="num">งาน</th><th class="num">ปิดแล้ว</th><th class="num">คืบหน้า</th>
-            <th class="num" title="มอบหมาย → รับสินค้า">มอบ→รับ</th>
+            <th class="num" title="วันที่พิมพ์ → รับสินค้า">พิมพ์→รับ</th>
             <th class="num" title="รับสินค้า → นำกลับคลัง">รับ→คลัง</th>
             <th class="num" title="รับสินค้า → ปิดงาน">รับ→ปิด</th></tr></thead>
           <tbody><tr><td colspan="7" class="sempty">กำลังโหลด…</td></tr></tbody>
@@ -1813,7 +1846,7 @@ function vendorDashboard() {
         <div class="vkpi-l">${label}</div><div class="vkpi-h">${hint}</div></div>`;
     };
     $('#v-kpi', w).innerHTML =
-      kcard(t.avg_assign_to_receive, 'd1', 'มอบหมาย → รับสินค้า', 'ความเร็วในการเข้ารับงาน')
+      kcard(t.avg_assign_to_receive, 'd1', 'วันที่พิมพ์ → รับสินค้า', 'ความเร็วในการเข้ารับงาน')
       + kcard(t.avg_receive_to_return, 'd2', 'รับสินค้า → นำกลับคลัง', 'ระยะเวลาดำเนินการ')
       + kcard(t.avg_receive_to_complete, 'd3', 'รับสินค้า → ปิดงาน', 'รวมจนจบกระบวนการ');
   }).catch((e) => {
