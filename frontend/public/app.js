@@ -382,8 +382,9 @@ VIEWS.myjobs = {
             <th><input type="checkbox" class="selall" title="เลือกทั้งหมด"/></th>
             <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th>
             <th>อำเภอ</th><th>จังหวัด</th>
-            <th class="num">กล่อง</th><th>หมวด</th>
-            <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่มอบหมาย</th><th class="dt">วันที่รับ</th><th class="dt">วันกลับคลัง</th><th></th>
+            <th class="num">กล่อง</th>
+            <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่มอบหมาย</th><th class="dt">วันที่รับ</th><th class="dt">วันกลับคลัง</th>
+            <th>หมวด</th><th></th>
           </tr></thead><tbody></tbody></table></div>`);
         const tb = $('tbody', tblWrap);
         items.forEach((o) => {
@@ -399,8 +400,8 @@ VIEWS.myjobs = {
             <td>${esc(o.district || '-')}</td>
             <td>${esc(o.province || '-')}</td>
             <td class="num">${o.qty_boxes ?? 0}</td>
-            <td class="l">${noteCats(o)}</td>
             ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.received_date)}${dcell(o.returned_date)}
+            <td class="l">${noteCats(o)}</td>
             <td class="edit">✏️</td></tr>`);
           const cb = $('.osel', tr);
           const setRow = () => { cb.checked ? selected.add(o.rg_no) : selected.delete(o.rg_no); tr.classList.toggle('on', cb.checked); syncGroupChk(g, items); syncSelAll(); updateBar(); };
