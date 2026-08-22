@@ -70,7 +70,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
     // ถ้ายังไม่ได้รัน region.sql (column region ยังไม่มี) → ตัด region ออกกัน upsert พัง
     const hasRegion = !(await supabase.from('rg_headers').select('region').limit(1)).error;
 
-    let headers = 0, items = 0, autoAssigned = 0, waiting = 0, newShops = [];
+    let headers = 0, items = 0, autoAssigned = 0, waiting = 0, newShops = [], newShopsTotal = 0;
     if (parsed.headers.length) {
       // ไฟล์เดียวอาจมีเลขที่ RG ซ้ำ — เก็บแถวหลังสุดของแต่ละ rg_no (upsert ห้ามชนกันเองในชุดเดียว)
       const uploadedAt = new Date().toISOString();
@@ -86,7 +86,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
       // เฉพาะ order ที่ยัง pending — ไม่แตะงานที่เดิน workflow ไปแล้ว
       try {
         const r = await autoAssignPending({ rgNos: dedup.map((h) => h.rg_no), actionBy: req.user?.id });
-        autoAssigned = r.assigned; waiting = r.waiting; newShops = r.newShops;
+        autoAssigned = r.assigned; waiting = r.waiting; newShops = r.newShops; newShopsTotal = r.newShopsTotal;
       } catch { /* ตาราง rules ยังไม่มี → ข้าม */ }
     }
     if (parsed.items.length) {
@@ -106,7 +106,8 @@ router.post('/import', upload.single('file'), async (req, res) => {
     res.json({
       format: parsed.format, imported: { headers, items },
       auto_assigned: autoAssigned, waiting_assignment: waiting,
-      new_shops: newShops, // ร้านที่ไม่ตรงกติกาใดเลย — แจ้งเตือนให้ไปเพิ่มกติกา
+      new_shops: newShops, // ร้านที่ไม่ตรงกติกาใดเลย (สรุปราย Sold To Code) — แจ้งเตือนให้ไปเพิ่มกติกา
+      new_shops_total: newShopsTotal,
     });
   } catch (e) {
     res.status(500).json({ error: 'บันทึกลงฐานข้อมูลไม่สำเร็จ: ' + e.message });

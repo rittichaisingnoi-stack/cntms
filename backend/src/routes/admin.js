@@ -137,7 +137,7 @@ router.delete('/area-rules/:id', async (req, res) => {
 router.post('/area-rules/apply', async (req, res) => {
   try {
     const r = await autoAssignPending({ actionBy: req.user.id });
-    res.json({ assigned: r.assigned, waiting: r.waiting, new_shops: r.newShops });
+    res.json({ assigned: r.assigned, waiting: r.waiting, new_shops: r.newShops, new_shops_total: r.newShopsTotal });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

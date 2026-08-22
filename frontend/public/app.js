@@ -187,21 +187,27 @@ VIEWS.import = {
         + (r.auto_assigned ? `<p class="ok">🤖 Auto Assign Vendor ตามกติกา ${r.auto_assigned} รายการ</p>` : '')
         + (r.waiting_assignment ? `<p class="err">⚠️ มี ${r.waiting_assignment} ออเดอร์ไม่ตรงกติกาใด — ค้างอยู่ที่ "รอจัดพื้นที่"</p>` : '');
       if (r.new_shops?.length) {
-        html += `<div class="alert-banner">🔔 พบร้านใหม่ที่ยังไม่มีในกติกา ${r.new_shops.length} ร้าน —
+        // สรุปราย Sold To Code — ร้านเดียวอาจมีหลายสาขา/หลายออเดอร์ค้าง
+        const total = r.new_shops_total ?? r.new_shops.length;
+        const more = total > r.new_shops.length ? ` (แสดง ${r.new_shops.length} ร้านแรก)` : '';
+        html += `<div class="alert-banner">🔔 พบร้านใหม่ที่ยังไม่มีในกติกา ${total} ร้าน${more} —
           ไปที่แท็บ "กติกาจัดพื้นที่" เพื่อเพิ่ม แล้วกด Re-assign หรือ assign มือที่แท็บ "รอจัดพื้นที่"</div>
           <div class="table-scroll"><table class="otable"><thead><tr>
-          <th>Ship To Code</th><th>Ship To</th><th>Sold To Code</th><th>เขต</th><th>ชื่อร้าน</th>
+          <th class="code">Sold To Code</th><th>ชื่อร้าน</th><th>เขต</th>
+          <th class="num">สาขา</th><th class="num">ออเดอร์รอจัดพื้นที่</th>
           </tr></thead><tbody>${r.new_shops.map((n) => `<tr>
-            <td>${esc(n.ship_to_code || '-')}</td><td>${esc(n.sold_to || '-')}</td>
-            <td>${esc(n.sold_to_code || '-')}</td><td>${esc(n.zone || '-')}</td>
-            <td class="l">${esc(n.sold_to_name || '-')}</td></tr>`).join('')}</tbody></table></div>`;
+            <td class="code">${esc(n.sold_to_code || '-')}</td>
+            <td class="l">${esc(n.sold_to_name || '-')}</td>
+            <td>${esc(n.zone || '-')}${n.zone_count > 1 ? ` <span class="muted">+${n.zone_count - 1}</span>` : ''}</td>
+            <td class="num">${n.branches ?? '-'}</td>
+            <td class="num"><b>${n.orders ?? '-'}</b></td></tr>`).join('')}</tbody></table></div>`;
       }
       out.innerHTML = html; pv.innerHTML = '';
       // แจ้งเตือนเด้งให้เห็นทันที (ผู้ใช้อาจกำลัง scroll ดูตารางอยู่ล่างสุด)
       const parts = [`บันทึกสำเร็จ · ${r.imported.headers} ออเดอร์`];
       if (r.auto_assigned) parts.push(`Auto Assign ${r.auto_assigned}`);
       if (r.waiting_assignment) parts.push(`รอจัดพื้นที่ ${r.waiting_assignment}`);
-      if (r.new_shops?.length) parts.push(`ร้านใหม่ ${r.new_shops.length}`);
+      if (r.new_shops?.length) parts.push(`ร้านใหม่ ${r.new_shops_total ?? r.new_shops.length}`);
       toast('✅ ' + parts.join(' · '));
       out.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }

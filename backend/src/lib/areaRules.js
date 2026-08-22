@@ -54,12 +54,20 @@ export async function autoAssignPending({ rgNos = null, actionBy = null } = {}) 
     const rule = rules.length ? resolveVendor(h, rules) : null;
     if (!rule) {
       waiting++;
-      const key = h.ship_to_code || h.sold_to || h.sold_to_code || h.rg_no;
-      if (!newShops.has(key)) {
+      // สรุปเป็นราย Sold To Code (ร้านเดียวมีได้หลายสาขา/หลายออเดอร์) พร้อมนับจำนวนออเดอร์ที่ค้าง
+      const key = h.sold_to_code || h.sold_to || h.ship_to_code || h.rg_no;
+      const cur = newShops.get(key);
+      if (!cur) {
         newShops.set(key, {
-          ship_to_code: h.ship_to_code, sold_to: h.sold_to,
-          sold_to_code: h.sold_to_code, zone: h.zone, sold_to_name: h.sold_to_name,
+          sold_to_code: h.sold_to_code, sold_to_name: h.sold_to_name,
+          orders: 1,
+          shipTos: new Set([h.ship_to_code].filter(Boolean)),
+          zones: new Set([h.zone].filter(Boolean)),
         });
+      } else {
+        cur.orders++;
+        if (h.ship_to_code) cur.shipTos.add(h.ship_to_code);
+        if (h.zone) cur.zones.add(h.zone);
       }
       continue;
     }
@@ -79,5 +87,13 @@ export async function autoAssignPending({ rgNos = null, actionBy = null } = {}) 
       note: `auto-assign ตามกติกา (${rule.rule_field} = ${rule.match_value})`,
     });
   }
-  return { assigned, waiting, newShops: [...newShops.values()].slice(0, 50) };
+  // เรียงจากร้านที่ค้างเยอะสุด — จะได้ไปเพิ่มกติกาให้ร้านที่มีผลมากที่สุดก่อน
+  const shops = [...newShops.values()]
+    .sort((a, b) => b.orders - a.orders)
+    .map((s) => ({
+      sold_to_code: s.sold_to_code, sold_to_name: s.sold_to_name,
+      zone: [...s.zones][0] || null, zone_count: s.zones.size,
+      orders: s.orders, branches: s.shipTos.size,
+    }));
+  return { assigned, waiting, newShops: shops.slice(0, 50), newShopsTotal: shops.length };
 }
