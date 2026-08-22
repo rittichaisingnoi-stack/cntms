@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import xlsx from 'xlsx';
 import { supabase } from '../lib/supabase.js';
 import { requireRole } from '../lib/auth.js';
-import { RULE_FIELDS, autoAssignPending } from '../lib/areaRules.js';
+import { RULE_FIELDS, FIELD_PRIORITY, autoAssignPending } from '../lib/areaRules.js';
 
 const router = Router();
 
@@ -105,12 +105,12 @@ router.get('/area-rules', async (_req, res) => {
 });
 
 router.post('/area-rules', async (req, res) => {
-  const { priority, rule_field, match_value, area, vendor_id, enabled } = req.body || {};
+  const { rule_field, match_value, area, vendor_id, enabled } = req.body || {};
   if (!RULE_FIELDS[rule_field]) return res.status(400).json({ error: 'rule_field ไม่ถูกต้อง' });
   if (!match_value) return res.status(400).json({ error: 'ต้องมีค่าที่ต้องตรง (match_value)' });
   if (!vendor_id) return res.status(400).json({ error: 'ต้องเลือก Vendor' });
   const { data, error } = await supabase.from('area_rules')
-    .insert({ priority: Number(priority) || 100, rule_field, match_value, area: area || null, vendor_id, enabled: enabled !== false })
+    .insert({ priority: FIELD_PRIORITY[rule_field], rule_field, match_value, area: area || null, vendor_id, enabled: enabled !== false })
     .select('*').single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -118,10 +118,13 @@ router.post('/area-rules', async (req, res) => {
 
 router.put('/area-rules/:id', async (req, res) => {
   const patch = {};
-  for (const k of ['priority', 'rule_field', 'match_value', 'area', 'vendor_id', 'enabled']) {
+  for (const k of ['rule_field', 'match_value', 'area', 'vendor_id', 'enabled']) {
     if (k in (req.body || {})) patch[k] = req.body[k];
   }
-  if (patch.rule_field && !RULE_FIELDS[patch.rule_field]) return res.status(400).json({ error: 'rule_field ไม่ถูกต้อง' });
+  if (patch.rule_field) {
+    if (!RULE_FIELDS[patch.rule_field]) return res.status(400).json({ error: 'rule_field ไม่ถูกต้อง' });
+    patch.priority = FIELD_PRIORITY[patch.rule_field]; // priority ผูกกับ field เสมอ
+  }
   const { error } = await supabase.from('area_rules').update(patch).eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });

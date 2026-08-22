@@ -10,6 +10,9 @@ export const RULE_FIELDS = {
 };
 export const FIELD_ORDER = ['sold_to', 'sold_to_code', 'zone', 'region'];
 
+// Priority ตายตัวตามความเจาะจงของ field — user ไม่ต้องกรอกเอง
+export const FIELD_PRIORITY = { sold_to: 1, sold_to_code: 2, zone: 3, region: 4 };
+
 export async function loadRules() {
   const { data, error } = await supabase
     .from('area_rules').select('*').eq('enabled', true).order('priority').order('id');

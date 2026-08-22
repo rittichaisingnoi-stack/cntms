@@ -1242,10 +1242,9 @@ VIEWS.arearules = {
   render: () => {
     const w = el(`<div class="view"><h3>กติกาจัดพื้นที่อัตโนมัติ (Priority Rules)</h3>
       <p class="hint">ระบบจับคู่ order → Vendor โดยไล่จากเจาะจงไปกว้าง: <b>Ship To Code → Ship To → Sold To Code → เขต</b>
-      (rule แรกที่ค่าตรงและ field เดียวกัน เรียงตาม Priority น้อย→มาก)</p>
+      (Priority ตั้งอัตโนมัติตามเงื่อนไขที่เลือก — ไม่ต้องกรอกเอง)</p>
       <div class="card"><h4>เพิ่ม Rule</h4>
-        <div class="row"><input id="r_pri" class="in" type="number" value="100" title="Priority"/>
-        <select id="r_field" class="in"></select></div>
+        <select id="r_field" class="in"></select>
         <input id="r_val" class="in" placeholder="ค่าที่ต้องตรง เช่น 011606 / 153"/>
         <select id="r_vendor" class="in"><option value="">— เลือก Vendor —</option></select>
         <button class="btn primary" id="r_add">เพิ่ม Rule</button><div id="r_err" class="err"></div></div>
@@ -1280,7 +1279,6 @@ VIEWS.arearules = {
           </div></div>`);
         c.querySelector('[data-act=edit]').onclick = () => {
           openModal(`<div class="d-no">แก้ไข Rule #${r.id}</div>
-            <label class="hint">Priority (น้อย = เช็คก่อน)</label><input id="er_pri" class="in" type="number" value="${r.priority}"/>
             <label class="hint">เงื่อนไข</label>
             <select id="er_field" class="in">${FIELDS.map((f) => `<option value="${f.key}" ${r.rule_field === f.key ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select>
             <label class="hint">ค่าที่ต้องตรง</label><input id="er_val" class="in" value="${esc(r.match_value)}"/>
@@ -1293,7 +1291,6 @@ VIEWS.arearules = {
               await api('/admin/area-rules/' + r.id, {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  priority: Number($('#er_pri').value) || 100,
                   rule_field: $('#er_field').value,
                   match_value: $('#er_val').value.trim(),
                   vendor_id: Number($('#er_vendor').value) || null,
@@ -1322,7 +1319,6 @@ VIEWS.arearules = {
         await api('/admin/area-rules', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            priority: Number($('#r_pri', w).value) || 100,
             rule_field: $('#r_field', w).value,
             match_value: $('#r_val', w).value.trim(),
             vendor_id: Number($('#r_vendor', w).value) || null,
