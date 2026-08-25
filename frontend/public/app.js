@@ -673,10 +673,41 @@ VIEWS.grimport = {
     const w = el(`<div class="view"><div class="card">
       <h3>Upload file รับสินค้าเข้าระบบ (ReportRG / ไฟล์ปิดงาน .xlsx)</h3>
       <p class="hint">ระบบจับคู่ด้วย "เลขที่ RG" — แถวที่มีวันปิดงาน ("วันที่สร้าง Doc. WH" หรือ "ว.ด.ปี ที่ Complete") = สินค้าเข้าคลังแล้ว<br>
+        · ปิดงานได้เมื่อ<b>วันที่รับสินค้า + วันกลับคลัง ครบแล้ว</b>เท่านั้น — ยังไม่ครบ ระบบพักไว้ให้ แล้วปิดอัตโนมัติเมื่อ Vendor กรอกครบ (ไม่ต้อง upload ซ้ำ)<br>
         · <b>ไม่มี Remark</b> → ปิดงานอัตโนมัติ &nbsp;·&nbsp; <b>มี Remark</b> → <span class="chip st st-gr_received">รับสินค้าเข้าระบบ</span> รอเคลียร์ Remark ก่อนปิดงาน</p>
       <input id="gfile" type="file" accept=".xlsx,.xls" class="in" />
       <button id="gup" class="btn primary">อัปโหลด & ปิดงาน</button>
-      <div id="gout"></div></div></div>`);
+      <div id="gout"></div></div>
+      <div class="card"><h3>ประวัติการ upload (ย้อนกลับได้)</h3>
+        <p class="hint">ย้อนกลับ = คืนสถานะทุกใบในชุดนั้นกลับเป็นค่าก่อน upload</p>
+        <div id="gbatches">กำลังโหลด…</div></div></div>`);
+
+    const loadBatches = async () => {
+      const box = $('#gbatches', w);
+      try {
+        const list = await api('/orders/gr-batches');
+        if (!list.length) { box.innerHTML = '<p class="hint">ยังไม่มีประวัติ</p>'; return; }
+        box.innerHTML = `<div class="table-scroll"><table class="otable"><thead><tr><th>เมื่อ</th><th>ไฟล์</th><th>ปิดงาน</th><th>รับเข้าระบบ</th><th>รอวันที่ครบ</th><th></th></tr></thead><tbody>${
+          list.map((b) => `<tr><td>${esc(String(b.created_at || '').slice(0, 16).replace('T', ' '))}</td>
+            <td>${esc(b.file_name || '-')}</td><td>${b.completed || 0}</td><td>${b.gr_received || 0}</td><td>${b.pending || 0}</td>
+            <td>${b.reverted_at
+              ? '<span class="hint">ย้อนกลับแล้ว</span>'
+              : `<button class="btn red" data-rev="${b.id}">ย้อนกลับ</button>`}</td></tr>`).join('')
+        }</tbody></table></div>`;
+        box.querySelectorAll('[data-rev]').forEach((btn) => {
+          btn.onclick = async () => {
+            if (!confirm('ย้อนกลับการ upload ชุดนี้? สถานะทุกใบจะกลับเป็นค่าก่อน upload')) return;
+            btn.disabled = true;
+            try {
+              const r = await api(`/orders/gr-batches/${btn.dataset.rev}/revert`, { method: 'POST' });
+              alert(`ย้อนกลับแล้ว ${r.reverted} รายการ` + (r.pending_cleared ? ` · ยกเลิกรายการค้าง ${r.pending_cleared}` : ''));
+              loadBatches();
+            } catch (e) { alert(e.message); btn.disabled = false; }
+          };
+        });
+      } catch (e) { box.innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+    };
+
     $('#gup', w).onclick = async () => {
       const f = $('#gfile', w).files[0], out = $('#gout', w);
       if (!f) { out.innerHTML = '<p class="err">กรุณาเลือกไฟล์</p>'; return; }
@@ -686,12 +717,15 @@ VIEWS.grimport = {
         const r = await api('/orders/gr-import', { method: 'POST', body: fd });
         out.innerHTML = `<p class="ok">✅ ปิดงาน ${r.completed} รายการ · รายการสินค้า ${r.items} แถว</p>`
           + (r.gr_received ? `<p class="ok">📦 รับสินค้าเข้าระบบ (มี Remark) ${r.gr_received} รายการ — ยังไม่ปิดงาน ดูที่แท็บ "รับสินค้าเข้าระบบ"</p>` : '')
+          + (r.pending ? `<p class="err">⏸️ รอวันที่ครบ ${r.pending} รายการ — ยังไม่ปิด (ขาดวันที่รับสินค้า/วันกลับคลัง) ระบบจะปิดให้อัตโนมัติเมื่อ Vendor กรอกครบ</p>` : '')
           + (r.already_completed ? `<p class="hint">ปิดไปก่อนแล้ว ${r.already_completed} รายการ</p>` : '')
           + (r.skipped_new ? `<p class="err">⏭️ ข้าม ${r.skipped_new} เลขที่ RG ที่ไม่มีในระบบ</p>` : '')
           + (r.no_doc_date ? `<p class="err">⏳ ยังไม่มีวันที่สร้าง Doc. WH (ยังไม่เข้าคลัง) ${r.no_doc_date} รายการ</p>` : '');
         $('#gfile', w).value = '';
+        loadBatches();
       } catch (e) { out.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
     };
+    loadBatches();
     return w;
   },
 };

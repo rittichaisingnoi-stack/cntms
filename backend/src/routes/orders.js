@@ -23,6 +23,50 @@ async function trackDates(rg_no, action_by, prev, { received_date, returned_date
   if (returned_date && !prev.returned_date) await track(rg_no, 'returned', action_by, { note });
 }
 
+// ---- ปิดงานจากไฟล์ GR: ต้องมีวันที่ครบก่อน ----
+// เงื่อนไขปิดงาน: ต้องมี received_date (วันรับสินค้า) และ returned_date (วันกลับคลัง) ครบทั้งคู่
+//   ถ้ายังไม่ครบ = คงสถานะเดิม แล้วพักวันปิดงานไว้ที่ gr_pending_completions
+//   เมื่อ Vendor กรอกวันครบทีหลัง ระบบ apply ให้อัตโนมัติ (ไม่ต้อง upload ไฟล์ซ้ำ)
+const datesComplete = (o) => Boolean(o?.received_date && o?.returned_date);
+
+// ปิดงาน/รับเข้าระบบ 1 ใบ จากข้อมูลปิดงาน c = { rg_no, doc_wh, completed_date, remark }
+//   cur = แถวปัจจุบันใน rg_headers · คืน 'completed' | 'gr_received' | null (ไม่ได้ทำอะไร)
+async function applyCompletion(cur, c, actionBy) {
+  const remark = (c.remark || '').trim();
+  const status = remark ? 'gr_received' : 'completed';
+  const { error } = await supabase.from('rg_headers')
+    .update({
+      doc_wh: c.doc_wh, status, gr_remark: remark || null, updated_at: now(),
+      ...(remark
+        ? { gr_received_date: c.completed_date }
+        : { completed_date: c.completed_date, gr_received_date: c.completed_date }),
+    })
+    .eq('rg_no', c.rg_no);
+  if (error) return null;
+  const docNote = `Doc. WH ${c.doc_wh || '-'} · ${c.completed_date}`;
+  await track(c.rg_no, 'gr_received', actionBy, {
+    note: docNote + (remark ? ` · Remark: ${remark}` : ''),
+  });
+  if (status === 'completed') await track(c.rg_no, 'completed', actionBy, { note: docNote });
+  return status;
+}
+
+// เรียกหลัง Vendor กรอกวันที่ — ถ้า RG นี้มีวันปิดงานค้างอยู่ และตอนนี้วันที่ครบแล้ว → ปิดให้เลย
+//   best-effort: ตาราง gr_pending_completions ยังไม่มี (ยังไม่รัน gr_batch.sql) → เงียบไว้
+async function applyPendingCompletion(rgNo) {
+  try {
+    const { data: p } = await supabase
+      .from('gr_pending_completions').select('*').eq('rg_no', rgNo).maybeSingle();
+    if (!p) return null;
+    const { data: cur } = await supabase.from('rg_headers')
+      .select('status, received_date, returned_date').eq('rg_no', rgNo).maybeSingle();
+    if (!cur || cur.status === 'completed' || !datesComplete(cur)) return null;
+    const status = await applyCompletion(cur, p, p.imported_by);
+    if (status) await supabase.from('gr_pending_completions').delete().eq('rg_no', rgNo);
+    return status;
+  } catch { return null; }
+}
+
 async function loadOrder(rgNo) {
   const { data } = await supabase.from('rg_headers').select('*').eq('rg_no', rgNo).maybeSingle();
   return data;
@@ -239,7 +283,9 @@ router.put('/:rgNo/vendor-dates', requireRole('vendor'), async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   await trackDates(req.params.rgNo, req.user.id, order, { received_date, returned_date },
     [received_date && `รับ ${received_date}`, returned_date && `กลับคลัง ${returned_date}`].filter(Boolean).join(' · '));
-  res.json({ ok: true });
+  // วันที่ครบแล้ว + มีวันปิดงานค้างจากไฟล์ GR → ปิดให้อัตโนมัติ ไม่ต้อง upload ซ้ำ
+  const auto = await applyPendingCompletion(req.params.rgNo);
+  res.json({ ok: true, auto_completed: auto });
 });
 
 // PUT /api/orders/bulk-vendor-dates  (vendor) — { rg_nos, received_date?, returned_date? }
@@ -256,7 +302,7 @@ router.put('/bulk-vendor-dates', requireRole('vendor'), async (req, res) => {
   const locked = (targets || []).length - list.length;
   if (!list.length) return res.status(400).json({ error: locked ? 'งานที่เลือกปิดแล้ว แก้วันที่ไม่ได้' : 'ไม่พบออเดอร์ของคุณตามที่เลือก' });
 
-  let updated = 0;
+  let updated = 0, autoClosed = 0;
   const badDates = []; // RG ที่วันที่ผิดลำดับ — ข้ามแล้วแจ้งกลับ
   for (const t of list) {
     const derr = dateOrderError(t, { received_date, returned_date });
@@ -270,9 +316,10 @@ router.put('/bulk-vendor-dates', requireRole('vendor'), async (req, res) => {
     if (!error) {
       updated++;
       await trackDates(t.rg_no, req.user.id, t, { received_date, returned_date }, 'bulk');
+      if (await applyPendingCompletion(t.rg_no)) autoClosed++;
     }
   }
-  res.json({ updated, locked, bad_dates: badDates });
+  res.json({ updated, locked, bad_dates: badDates, auto_completed: autoClosed });
 });
 
 // PUT /api/orders/bulk-vendor-notes  (vendor) — { rg_nos, rows:[{category,reason,return_qty,unit}] }
@@ -461,7 +508,7 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
   }
 
   // ---- บันทึกวันที่ ----
-  let updated = 0, skipped = 0, locked = 0;
+  let updated = 0, skipped = 0, locked = 0, autoClosed = 0;
   const badDates = []; // RG ที่วันที่ผิดลำดับ — ข้ามแล้วแจ้งกลับ
   for (const [rgNo, d] of dateByRg) {
     const cur = mymap.get(rgNo);
@@ -472,7 +519,12 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
     patch.status = vendorStatus(cur, patch);
     const { error } = await supabase.from('rg_headers').update(patch)
       .eq('rg_no', rgNo).neq('status', 'completed');
-    if (!error) { updated++; await trackDates(rgNo, req.user.id, cur, d, '(excel)'); }
+    if (!error) {
+      updated++;
+      await trackDates(rgNo, req.user.id, cur, d, '(excel)');
+      // วันที่ครบแล้ว + มีวันปิดงานค้างจากไฟล์ GR → ปิดให้อัตโนมัติ
+      if (await applyPendingCompletion(rgNo)) autoClosed++;
+    }
   }
 
   // ---- แทนที่หมวด/เหตุผล (เฉพาะ RG ที่ปรากฏในไฟล์) ----
@@ -513,7 +565,7 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
   res.json({
     updated, skipped, not_mine: notMine, locked,
     notes_updated: notesUpdated, notes_saved: notesSaved, bad_rows: badRow,
-    bad_dates: badDates,
+    bad_dates: badDates, auto_completed: autoClosed,
   });
 });
 
@@ -622,45 +674,126 @@ router.post('/gr-import', requireRole('gr'), upload.single('file'), async (req, 
     }
 
     // รับสินค้าเข้าระบบ / ปิดงาน: RG ที่มี "วันที่สร้าง Doc. WH" = สินค้าเข้าคลังแล้ว
-    //   มี Remark  → gr_received (รับสินค้าเข้าระบบ) — ค้างไว้ให้ตามเคลียร์ Remark ก่อน
-    //   ไม่มี Remark → completed  (ปิดงาน)
-    let completed = 0, grReceived = 0, already = 0, noDate = 0;
+    //   ต้องมีวันที่รับสินค้า + วันกลับคลัง ครบก่อน ถึงจะปิด/รับเข้าระบบได้
+    //   ไม่ครบ → คงสถานะเดิม พักไว้ที่ gr_pending_completions แล้ว auto ทีหลัง
+    //   ครบแล้ว: มี Remark → gr_received (รอเคลียร์ Remark) · ไม่มี Remark → completed
+    let completed = 0, grReceived = 0, already = 0, noDate = 0, pending = 0;
     const withDate = new Set(parsed.completions.map((c) => c.rg_no));
     noDate = [...existing].filter((rg) => !withDate.has(rg)).length;
 
+    // เปิด batch ไว้ก่อน เพื่อเก็บสถานะเดิมของแต่ละใบ (ใช้ย้อนกลับทั้งชุด)
+    let batchId = null;
+    try {
+      const { data: b } = await supabase.from('gr_import_batches')
+        .insert({ file_name: req.file.originalname, imported_by: req.user.id })
+        .select('id').maybeSingle();
+      batchId = b?.id ?? null;
+    } catch { /* ยังไม่ได้รัน gr_batch.sql → ทำงานต่อแบบไม่มี batch */ }
+
+    const pendingRows = [];  // วันปิดงานที่ค้างรอวันที่ครบ
+    const batchRows = [];    // สถานะเดิมก่อนแก้ (สำหรับย้อนกลับ)
     for (const c of parsed.completions) {
       if (!existing.has(c.rg_no)) continue; // RG ใหม่ → ข้าม
       const { data: cur } = await supabase
-        .from('rg_headers').select('status').eq('rg_no', c.rg_no).maybeSingle();
+        .from('rg_headers')
+        .select('status, doc_wh, completed_date, gr_received_date, gr_remark, received_date, returned_date')
+        .eq('rg_no', c.rg_no).maybeSingle();
       if (!cur) continue;
       if (cur.status === 'completed') { already++; continue; }
-      const remark = (c.remark || '').trim();
-      const status = remark ? 'gr_received' : 'completed';
-      // มี Remark = ยังไม่ปิดงานจริง จึงยังไม่ประทับ completed_date (KPI ช่วง 3 นับจากช่องนี้)
-      //   เก็บวันที่รับเข้าระบบไว้ที่ gr_received_date ไปก่อน แล้วค่อยยกไปตอนปิดงาน
-      const { error } = await supabase.from('rg_headers')
-        .update({
-          doc_wh: c.doc_wh, status, gr_remark: remark || null, updated_at: now(),
-          ...(remark
-            ? { gr_received_date: c.completed_date }
-            : { completed_date: c.completed_date, gr_received_date: c.completed_date }),
-        })
-        .eq('rg_no', c.rg_no);
-      if (!error) {
-        if (status === 'completed') completed++; else grReceived++;
-        const docNote = `Doc. WH ${c.doc_wh || '-'} · ${c.completed_date}`;
-        // สินค้าเข้าคลังทั้ง 2 กรณี → บันทึก gr_received เสมอ (เป็นที่มาของ วันที่/User WH RCV ในรายงาน)
-        await track(c.rg_no, 'gr_received', req.user.id, {
-          note: docNote + (remark ? ` · Remark: ${remark}` : ''),
+
+      // วันที่ยังไม่ครบ → พักไว้ ไม่แตะสถานะ
+      if (!datesComplete(cur)) {
+        pendingRows.push({
+          rg_no: c.rg_no, doc_wh: c.doc_wh, completed_date: c.completed_date,
+          remark: (c.remark || '').trim() || null,
+          imported_by: req.user.id, batch_id: batchId,
         });
-        // ไม่มี Remark = ปิดงานในขั้นตอนเดียวกัน → บันทึกอีกแถวเป็นผู้ปิดงาน
-        if (status === 'completed') await track(c.rg_no, 'completed', req.user.id, { note: docNote });
+        pending++;
+        continue;
       }
+
+      batchRows.push({
+        batch_id: batchId, rg_no: c.rg_no,
+        prev_status: cur.status, prev_doc_wh: cur.doc_wh,
+        prev_completed_date: cur.completed_date, prev_gr_received_date: cur.gr_received_date,
+        prev_gr_remark: cur.gr_remark,
+      });
+      const status = await applyCompletion(cur, c, req.user.id);
+      if (status === 'completed') completed++;
+      else if (status === 'gr_received') grReceived++;
     }
-    res.json({ items, completed, gr_received: grReceived, already_completed: already, no_doc_date: noDate, skipped_new: skippedNew });
+
+    // เก็บสถานะเดิม + รายการค้าง (best-effort — ยังไม่รัน gr_batch.sql ก็ยังใช้งานได้)
+    try {
+      if (batchId && batchRows.length) await supabase.from('gr_import_batch_items').insert(batchRows);
+      if (pendingRows.length) await supabase.from('gr_pending_completions').upsert(pendingRows, { onConflict: 'rg_no' });
+      if (batchId) {
+        await supabase.from('gr_import_batches')
+          .update({ completed, gr_received: grReceived, pending }).eq('id', batchId);
+      }
+    } catch { /* ตารางยังไม่มี → ข้าม */ }
+
+    res.json({ items, completed, gr_received: grReceived, already_completed: already, no_doc_date: noDate, pending, batch_id: batchId, skipped_new: skippedNew });
+
   } catch (e) {
     res.status(500).json({ error: 'บันทึกลงฐานข้อมูลไม่สำเร็จ: ' + e.message });
   }
+});
+
+// GET /api/orders/gr-batches  (gr) — ประวัติการ upload ปิดงาน (ล่าสุดก่อน)
+router.get('/gr-batches', requireRole('gr'), async (req, res) => {
+  const { data, error } = await supabase
+    .from('gr_import_batches')
+    .select('id, file_name, completed, gr_received, pending, reverted_at, created_at, imported_by')
+    .order('id', { ascending: false }).limit(20);
+  if (error) return res.status(500).json({ error: 'ยังไม่ได้ติดตั้งตาราง (รัน gr_batch.sql)' });
+  res.json(data || []);
+});
+
+// POST /api/orders/gr-batches/:id/revert  (gr) — ย้อนกลับการ upload ปิดงานทั้งชุด
+//   คืนสถานะ/วันที่ของทุกใบในชุดกลับเป็นค่าก่อน upload + ลบรายการค้างของชุดนั้น
+router.post('/gr-batches/:id/revert', requireRole('gr'), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'batch ไม่ถูกต้อง' });
+
+  const { data: batch, error: be } = await supabase
+    .from('gr_import_batches').select('*').eq('id', id).maybeSingle();
+  if (be) return res.status(500).json({ error: 'ยังไม่ได้ติดตั้งตาราง (รัน gr_batch.sql)' });
+  if (!batch) return res.status(404).json({ error: 'ไม่พบรายการ upload นี้' });
+  if (batch.reverted_at) return res.status(400).json({ error: 'ชุดนี้ย้อนกลับไปแล้ว' });
+
+  const { data: rows } = await supabase
+    .from('gr_import_batch_items').select('*').eq('batch_id', id);
+
+  let reverted = 0;
+  for (const r of rows || []) {
+    const { error } = await supabase.from('rg_headers').update({
+      status: r.prev_status,
+      doc_wh: r.prev_doc_wh,
+      completed_date: r.prev_completed_date,
+      gr_received_date: r.prev_gr_received_date,
+      gr_remark: r.prev_gr_remark,
+      updated_at: now(),
+    }).eq('rg_no', r.rg_no);
+    if (error) continue;
+    reverted++;
+    // ลบประวัติที่ batch นี้สร้างไว้ ไม่ให้ KPI/รายงานนับซ้ำ
+    await supabase.from('order_tracking').delete()
+      .eq('rg_no', r.rg_no).in('status', ['gr_received', 'completed'])
+      .gte('created_at', batch.created_at);
+    await track(r.rg_no, r.prev_status, req.user.id, { note: `ย้อนกลับ upload #${id}` });
+  }
+
+  // รายการที่ค้างรอวันที่ครบจากชุดนี้ — ยกเลิกไปด้วย
+  const { data: pend } = await supabase
+    .from('gr_pending_completions').select('rg_no').eq('batch_id', id);
+  const pendingCleared = (pend || []).length;
+  if (pendingCleared) await supabase.from('gr_pending_completions').delete().eq('batch_id', id);
+
+  await supabase.from('gr_import_batches')
+    .update({ reverted_at: now(), reverted_by: req.user.id }).eq('id', id);
+
+  res.json({ ok: true, reverted, pending_cleared: pendingCleared });
 });
 
 // POST /api/orders/:rgNo/complete  (gr) — ปิดงานรายใบ + แนบเอกสาร (ทางเลือกนอกจากอัปโหลด ReportRG)
