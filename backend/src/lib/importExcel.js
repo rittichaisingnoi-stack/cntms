@@ -275,3 +275,22 @@ export function parseWorkbook(buffer) {
     : parseSummary(rows);
   return { format: fmt, ...parsed };
 }
+
+// รวมแถวสินค้าซ้ำ rg_no+product_code (ไฟล์แตกบรรทัดต่อ invoice/ล็อต/ดี-เสีย)
+// DB มี unique constraint uq_rg_items_rg_product — insert แถวซ้ำจะพัง จึงรวมยอด ดี/เสีย เข้าด้วยกัน
+export function mergeItems(items) {
+  const m = new Map();
+  for (const it of items) {
+    const k = it.rg_no + '|' + (it.product_code ?? '');
+    const p = m.get(k);
+    if (p) {
+      p.qty_good += it.qty_good || 0;
+      p.qty_damaged += it.qty_damaged || 0;
+      p.product_name = p.product_name || it.product_name;
+      p.invoice_no = p.invoice_no || it.invoice_no;
+    } else {
+      m.set(k, { ...it, qty_good: it.qty_good || 0, qty_damaged: it.qty_damaged || 0 });
+    }
+  }
+  return [...m.values()];
+}

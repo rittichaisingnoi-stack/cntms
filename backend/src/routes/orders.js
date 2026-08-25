@@ -4,7 +4,7 @@ import xlsx from 'xlsx';
 import { supabase } from '../lib/supabase.js';
 import { requireRole } from '../lib/auth.js';
 import { autoAssignPending } from '../lib/areaRules.js';
-import { toISODate, parseWorkbook } from '../lib/importExcel.js';
+import { toISODate, parseWorkbook, mergeItems } from '../lib/importExcel.js';
 import { applySearch } from '../lib/search.js';
 
 const router = Router();
@@ -614,7 +614,7 @@ router.post('/gr-import', requireRole('gr'), upload.single('file'), async (req, 
     let items = 0;
     const keepRg = allRg.filter((rg) => existing.has(rg));
     if (keepRg.length) {
-      const keepItems = parsed.items.filter((it) => existing.has(it.rg_no));
+      const keepItems = mergeItems(parsed.items.filter((it) => existing.has(it.rg_no)));
       await supabase.from('rg_items').delete().in('rg_no', keepRg);
       const { error } = await supabase.from('rg_items').insert(keepItems);
       if (error) throw error;

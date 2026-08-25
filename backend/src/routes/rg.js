@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { supabase } from '../lib/supabase.js';
-import { parseWorkbook } from '../lib/importExcel.js';
+import { parseWorkbook, mergeItems } from '../lib/importExcel.js';
 import { REASON_MAP } from '../lib/reasons.js';
 import { autoAssignPending } from '../lib/areaRules.js';
 import { applySearch } from '../lib/search.js';
@@ -99,9 +99,10 @@ router.post('/import', upload.single('file'), async (req, res) => {
         .upsert(stubs, { onConflict: 'rg_no', ignoreDuplicates: true });
       if (e0) throw e0;
       await supabase.from('rg_items').delete().in('rg_no', rgNos);
-      const { error } = await supabase.from('rg_items').insert(parsed.items);
+      const merged = mergeItems(parsed.items);
+      const { error } = await supabase.from('rg_items').insert(merged);
       if (error) throw error;
-      items = parsed.items.length;
+      items = merged.length;
     }
     res.json({
       format: parsed.format, imported: { headers, items },
