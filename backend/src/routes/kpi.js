@@ -10,8 +10,14 @@ const router = Router();
 //  d3 = ปิดงาน − รับสินค้าแล้ว        (completed_date − received_date)
 
 const DAY = 86400000;
+const isValidYear = (d) => {
+  if (!d) return false;
+  const y = parseInt(String(d).slice(0, 4), 10);
+  return y >= 2020 && y <= 2035;
+};
 const days = (a, b) => {
   if (!a || !b) return null;
+  if (!isValidYear(a) || !isValidYear(b)) return null;
   const da = new Date(String(a).slice(0, 10)), db = new Date(String(b).slice(0, 10));
   if (isNaN(da) || isNaN(db)) return null;
   return Math.round((db - da) / DAY);
@@ -21,8 +27,8 @@ const days = (a, b) => {
 const nonNeg = (v) => (v == null ? null : Math.max(0, v));
 const kpiOf = (r) => ({
   d1: nonNeg(days(r.rg_date, r.received_date)),
-  d2: days(r.received_date, r.returned_date),
-  d3: days(r.received_date, r.completed_date),
+  d2: nonNeg(days(r.received_date, r.returned_date)),
+  d3: nonNeg(days(r.received_date, r.completed_date)),
 });
 
 // ดึง order ที่มอบหมายแล้วในช่วงวันที่ (filter ตามวันที่พิมพ์) — vendor เห็นเฉพาะของตัวเอง

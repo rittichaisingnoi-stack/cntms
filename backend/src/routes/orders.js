@@ -24,26 +24,26 @@ async function trackDates(rg_no, action_by, prev, { received_date, returned_date
 }
 
 // ---- ปิดงานจากไฟล์ GR: ต้องมีวันที่ครบก่อน ----
-// เงื่อนไขปิดงาน: ต้องมี received_date (วันรับสินค้า) และ returned_date (วันกลับคลัง) ครบทั้งคู่
+// เงื่อนไขปิดงาน: ต้องมี received_date (วันรับสินค้า), returned_date (วันกลับคลัง) และ วันที่ WH RCV ครบทั้ง 3 รายการ
 //   ถ้ายังไม่ครบ = คงสถานะเดิม แล้วพักวันปิดงานไว้ที่ gr_pending_completions
 //   เมื่อ Vendor กรอกวันครบทีหลัง ระบบ apply ให้อัตโนมัติ (ไม่ต้อง upload ไฟล์ซ้ำ)
-const datesComplete = (o) => Boolean(o?.received_date && o?.returned_date);
+const datesComplete = (o) => Boolean(o?.received_date && o?.returned_date && (o?.gr_received_date || o?.completed_date));
 
 // ปิดงาน/รับเข้าระบบ 1 ใบ จากข้อมูลปิดงาน c = { rg_no, doc_wh, completed_date, remark }
 //   cur = แถวปัจจุบันใน rg_headers · คืน 'completed' | 'gr_received' | null (ไม่ได้ทำอะไร)
 async function applyCompletion(cur, c, actionBy) {
   const remark = (c.remark || '').trim();
+  const whDate = c.completed_date || cur.gr_received_date;
   const status = remark ? 'gr_received' : 'completed';
   const { error } = await supabase.from('rg_headers')
     .update({
       doc_wh: c.doc_wh, status, gr_remark: remark || null, updated_at: now(),
-      ...(remark
-        ? { gr_received_date: c.completed_date }
-        : { completed_date: c.completed_date, gr_received_date: c.completed_date }),
+      gr_received_date: whDate,
+      ...(remark ? {} : { completed_date: whDate }),
     })
     .eq('rg_no', c.rg_no);
   if (error) return null;
-  const docNote = `Doc. WH ${c.doc_wh || '-'} · ${c.completed_date}`;
+  const docNote = `Doc. WH ${c.doc_wh || '-'} · ${whDate || c.completed_date}`;
   await track(c.rg_no, 'gr_received', actionBy, {
     note: docNote + (remark ? ` · Remark: ${remark}` : ''),
   });
@@ -59,8 +59,10 @@ async function applyPendingCompletion(rgNo) {
       .from('gr_pending_completions').select('*').eq('rg_no', rgNo).maybeSingle();
     if (!p) return null;
     const { data: cur } = await supabase.from('rg_headers')
-      .select('status, received_date, returned_date').eq('rg_no', rgNo).maybeSingle();
-    if (!cur || cur.status === 'completed' || !datesComplete(cur)) return null;
+      .select('status, received_date, returned_date, gr_received_date').eq('rg_no', rgNo).maybeSingle();
+    if (!cur || cur.status === 'completed') return null;
+    const whDate = p.completed_date || cur.gr_received_date;
+    if (!cur.received_date || !cur.returned_date || !whDate) return null;
     const status = await applyCompletion(cur, p, p.imported_by);
     if (status) await supabase.from('gr_pending_completions').delete().eq('rg_no', rgNo);
     return status;
@@ -242,6 +244,16 @@ function vendorStatus(order, { received_date, returned_date }) {
 // วันนี้ตามเวลาไทย (UTC+7) — กันเคสเซิร์ฟเวอร์อยู่คนละ timezone แล้วตัดวันเร็ว/ช้าไป
 const todayTH = () => new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
 
+function isValidDateStr(d) {
+  if (!d) return true;
+  const s = String(d).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const y = parseInt(s.slice(0, 4), 10);
+  if (y < 2020 || y > 2035) return false;
+  const dt = new Date(s);
+  return !isNaN(dt.getTime());
+}
+
 // ตรวจลำดับวันที่ให้สมเหตุสมผล — ผสมค่าใหม่ที่กำลังบันทึกกับค่าเดิมในฐานข้อมูล
 //   กติกา: กลับคลัง ≥ รับสินค้า (เท่ากันได้) · ห้ามกรอกวันล่วงหน้า (ทำเสร็จแล้วค่อยกรอก)
 //   ไม่บังคับ "รับสินค้า ≥ วันมอบหมาย" — Vendor คีย์ย้อนหลังได้
@@ -250,6 +262,15 @@ const todayTH = () => new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 
 //   คืนข้อความ error ถ้าผิดกติกา · คืน null ถ้าผ่าน
 function dateOrderError(order, { received_date, returned_date }) {
   const day = (d) => (d ? String(d).slice(0, 10) : null); // เทียบเฉพาะวันที่ (yyyy-mm-dd)
+
+  // ตรวจสอบรูปแบบและช่วงปี ค.ศ.
+  if (received_date && !isValidDateStr(received_date)) {
+    return `วันที่รับสินค้า (${received_date}) รูปแบบหรือปีไม่ถูกต้อง (ต้องเป็นปี ค.ศ. ระหว่าง 2020 ถึงปัจจุบัน)`;
+  }
+  if (returned_date && !isValidDateStr(returned_date)) {
+    return `วันกลับคลัง (${returned_date}) รูปแบบหรือปีไม่ถูกต้อง (ต้องเป็นปี ค.ศ. ระหว่าง 2020 ถึงปัจจุบัน)`;
+  }
+
   // ห้ามวันอนาคต — ตรวจเฉพาะค่าที่กรอกเข้ามารอบนี้ (ค่าเดิมใน DB ไม่ตรวจ ไม่งั้นแก้อะไรไม่ได้เลย)
   const today = todayTH();
   const newRec = day(received_date);
@@ -701,8 +722,9 @@ router.post('/gr-import', requireRole('gr'), upload.single('file'), async (req, 
       if (!cur) continue;
       if (cur.status === 'completed') { already++; continue; }
 
-      // วันที่ยังไม่ครบ → พักไว้ ไม่แตะสถานะ
-      if (!datesComplete(cur)) {
+      // วันที่ยังไม่ครบ (ต้องมี received_date, returned_date และ วันที่สร้าง Doc. WH / gr_received_date) → พักไว้ ไม่แตะสถานะ
+      const whDate = c.completed_date || cur.gr_received_date;
+      if (!cur.received_date || !cur.returned_date || !whDate) {
         pendingRows.push({
           rg_no: c.rg_no, doc_wh: c.doc_wh, completed_date: c.completed_date,
           remark: (c.remark || '').trim() || null,
@@ -800,6 +822,18 @@ router.post('/gr-batches/:id/revert', requireRole('gr'), async (req, res) => {
 router.post('/:rgNo/complete', requireRole('gr'), upload.single('file'), async (req, res) => {
   const order = await loadOrder(req.params.rgNo);
   if (!order) return res.status(404).json({ error: 'ไม่พบ Order' });
+  if (order.status === 'completed') return res.status(400).json({ error: 'ออเดอร์นี้ปิดงานไปแล้ว' });
+
+  // ต้องมี วันที่รับ, วันที่กลับคลัง, วันที่ WH RCV ครบทั้ง 3 รายการ
+  const missing = [];
+  if (!order.received_date) missing.push('วันที่รับสินค้า');
+  if (!order.returned_date) missing.push('วันที่กลับคลัง');
+  if (!order.gr_received_date) missing.push('วันที่ WH RCV');
+  if (missing.length > 0) {
+    return res.status(400).json({
+      error: `ไม่สามารถปิดงานได้: ขาดข้อมูล ${missing.join(', ')} (ต้องมีครบทั้ง วันที่รับสินค้า, วันที่กลับคลัง และ วันที่ WH RCV)`,
+    });
+  }
 
   let url = null;
   if (req.file) {
@@ -810,10 +844,10 @@ router.post('/:rgNo/complete', requireRole('gr'), upload.single('file'), async (
       return res.status(500).json({ error: 'อัปโหลดไฟล์ไม่สำเร็จ: ' + e.message });
     }
   }
-  // ใบที่เคยรับเข้าระบบแล้ว (ติด Remark) ใช้วันที่เข้าคลังจริงเป็นวันปิดงาน ไม่ใช่วันที่กดปุ่ม
+  // ใบที่เคยรับเข้าระบบแล้ว (ติด Remark) ใช้วันที่เข้าคลังจริงเป็นวันปิดงาน
   const patch = {
     status: 'completed', updated_at: now(),
-    completed_date: order.gr_received_date || new Date().toISOString().slice(0, 10),
+    completed_date: order.gr_received_date,
   };
   if (url) patch.completed_file_url = url;
   const { error } = await supabase.from('rg_headers').update(patch).eq('rg_no', req.params.rgNo);
@@ -828,23 +862,31 @@ router.post('/bulk-complete', requireRole('gr'), async (req, res) => {
   if (!Array.isArray(rg_nos) || !rg_nos.length) return res.status(400).json({ error: 'กรุณาเลือกออเดอร์' });
 
   const { data: targets, error: se } = await supabase
-    .from('rg_headers').select('rg_no, status, gr_received_date').in('rg_no', rg_nos);
+    .from('rg_headers').select('rg_no, status, received_date, returned_date, gr_received_date').in('rg_no', rg_nos);
   if (se) return res.status(500).json({ error: se.message });
   const list = (targets || []).filter((t) => t.status !== 'completed');
   const already = (targets || []).length - list.length;
   if (!list.length) return res.status(400).json({ error: already ? 'งานที่เลือกปิดแล้วทั้งหมด' : 'ไม่พบออเดอร์ตามที่เลือก' });
 
-  const today = new Date().toISOString().slice(0, 10);
+  // ต้องมี received_date, returned_date, gr_received_date ครบทั้ง 3 รายการ
+  const ready = list.filter((t) => t.received_date && t.returned_date && t.gr_received_date);
+  const skippedMissing = list.length - ready.length;
+
+  if (!ready.length) {
+    return res.status(400).json({
+      error: `ไม่สามารถปิดงานได้: ทั้ง ${list.length} รายการที่เลือก ยังขาดข้อมูลวันที่ (ต้องมีครบทั้ง วันที่รับสินค้า, วันที่กลับคลัง และ วันที่ WH RCV)`,
+    });
+  }
+
   let completed = 0;
-  for (const t of list) {
-    // ใบที่เคยรับเข้าระบบแล้ว (ติด Remark) ใช้วันที่รับเข้าคลังจริงเป็นวันปิดงาน ไม่ใช่วันที่กดปุ่ม
-    const completed_date = t.gr_received_date || today;
+  for (const t of ready) {
+    const completed_date = t.gr_received_date;
     const { error } = await supabase.from('rg_headers')
       .update({ status: 'completed', completed_date, updated_at: now() })
       .eq('rg_no', t.rg_no).neq('status', 'completed');
     if (!error) { completed++; await track(t.rg_no, 'completed', req.user.id, { note: 'เคลียร์ Remark' }); }
   }
-  res.json({ completed, already_completed: already });
+  res.json({ completed, already_completed: already, skipped_missing_dates: skippedMissing });
 });
 
 // PUT /api/orders/:rgNo  (supervisor) — แก้ไขทุก field
@@ -858,6 +900,19 @@ router.put('/:rgNo', requireRole('supervisor'), async (req, res) => {
   ];
   const patch = { updated_at: now() };
   for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
+
+  if (patch.status === 'completed') {
+    const order = await loadOrder(req.params.rgNo);
+    if (!order) return res.status(404).json({ error: 'ไม่พบ Order' });
+    const rec = patch.received_date ?? order.received_date;
+    const ret = patch.returned_date ?? order.returned_date;
+    const wh = patch.gr_received_date ?? order.gr_received_date;
+    if (!rec || !ret || !wh) {
+      return res.status(400).json({
+        error: 'ไม่สามารถเปลี่ยนสถานะเป็นปิดงาน (completed) ได้: ต้องมีข้อมูล วันที่รับสินค้า, วันที่กลับคลัง และ วันที่ WH RCV ครบทั้ง 3 รายการ',
+      });
+    }
+  }
 
   const { error } = await supabase.from('rg_headers').update(patch).eq('rg_no', req.params.rgNo);
   if (error) return res.status(500).json({ error: error.message });

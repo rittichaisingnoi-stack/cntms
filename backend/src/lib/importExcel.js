@@ -16,13 +16,19 @@ export function toISODate(v) {
   const s = String(v).trim();
   // ISO first: yyyy-mm-dd (หรือ yyyy/mm/dd) — ปีขึ้นก่อน
   const iso = s.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})/);
-  if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+  if (iso) {
+    let y = Number(iso[1]);
+    if (y > 2400) y -= 543;
+    if (y < 2020 || y > 2035) return null;
+    return `${y}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+  }
   // dd/mm/yy(yy) — รองรับปี 2 หรือ 4 หลัก
   const m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
   if (m) {
     let [, dd, mm, yy] = m;
     if (yy.length === 2) yy = String(2000 + Number(yy)); // 24 -> 2024
     if (Number(yy) > 2400) yy = String(Number(yy) - 543); // พ.ศ. -> ค.ศ.
+    if (Number(yy) < 2020 || Number(yy) > 2035) return null;
     return `${yy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
   }
   return null;

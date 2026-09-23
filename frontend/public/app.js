@@ -337,9 +337,9 @@ VIEWS.myjobs = {
     <div class="assign-bar hidden" id="jbar">
       <span id="jcount" class="acount">0</span>
       <label class="jbar-f"><span>วันที่รับ</span>
-        <input id="jbar-recv-date" type="date" class="in" max="${todayStr()}" title="วันที่รับสินค้าจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
+        <input id="jbar-recv-date" type="date" class="in" min="2020-01-01" max="${todayStr()}" title="วันที่รับสินค้าจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
       <label class="jbar-f"><span>วันกลับคลัง</span>
-        <input id="jbar-ret-date" type="date" class="in" title="วันนำสินค้ากลับคืนคลัง (ใส่วันล่วงหน้าได้ แต่ต้องไม่น้อยกว่าวันที่รับ)"/></label>
+        <input id="jbar-ret-date" type="date" class="in" min="2020-01-01" title="วันนำสินค้ากลับคืนคลัง (ใส่วันล่วงหน้าได้ แต่ต้องไม่น้อยกว่าวันที่รับ)"/></label>
       <label class="jbar-f"><span>หมวด</span>
         <select id="jbar-cat" class="in" title="หมวด">${['<option value="">— เลือกหมวด —</option>'].concat(NOTE_CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)).join('')}</select></label>
       <label class="jbar-f jbar-f-wide"><span>เหตุผล</span>
@@ -582,10 +582,10 @@ async function openVendorJob(o, reload) {
     ${o.status === 'completed'
       ? '<p class="hint">🔒 งานปิดแล้ว — แก้ไขวันที่ไม่ได้</p>'
       : `<label class="hint">วันที่รับสินค้าจริง</label>
-    <div class="row"><input id="rdate" type="date" class="in" max="${todayStr()}" value="${o.received_date ? String(o.received_date).slice(0,10) : ''}"/>
+    <div class="row"><input id="rdate" type="date" class="in" min="2020-01-01" max="${todayStr()}" value="${o.received_date ? String(o.received_date).slice(0,10) : ''}"/>
     <button class="btn primary" id="brecv" style="width:auto">บันทึกรับ</button></div>
     <label class="hint">วันนำสินค้ากลับคืนคลังจริง</label>
-    <div class="row"><input id="tdate" type="date" class="in" title="ใส่วันล่วงหน้าได้ แต่ต้องไม่น้อยกว่าวันที่รับ" value="${o.returned_date ? String(o.returned_date).slice(0,10) : ''}"/>
+    <div class="row"><input id="tdate" type="date" class="in" min="2020-01-01" title="ใส่วันล่วงหน้าได้ แต่ต้องไม่น้อยกว่าวันที่รับ" value="${o.returned_date ? String(o.returned_date).slice(0,10) : ''}"/>
     <button class="btn red" id="bret" style="width:auto">บันทึกกลับคลัง</button></div>`}
     <hr/>
     <div class="row" style="justify-content:space-between;align-items:center">
@@ -784,7 +784,10 @@ VIEWS.grlist = {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ rg_nos: [...selected] }),
           });
-          toast(`ปิดงาน ${r.completed} รายการ` + (r.already_completed ? ` (ปิดไปแล้ว ${r.already_completed})` : ''));
+          let msg = `ปิดงาน ${r.completed} รายการ`;
+          if (r.already_completed) msg += ` · ปิดไปก่อนแล้ว ${r.already_completed} รายการ`;
+          if (r.skipped_missing_dates) msg += ` · ข้าม ${r.skipped_missing_dates} รายการ (ยังไม่มีวันที่รับ/กลับคลัง/WH RCV)`;
+          toast(msg);
           reload();
         } catch (e) { toast('ผิดพลาด: ' + e.message); btn.disabled = false; }
       };
@@ -795,13 +798,24 @@ VIEWS.grlist = {
 };
 
 function openGrComplete(o, reload) {
+  const missing = [];
+  if (!o.received_date) missing.push('วันที่รับสินค้า');
+  if (!o.returned_date) missing.push('วันกลับคลัง');
+  if (!o.gr_received_date) missing.push('วันที่ WH RCV');
+  const canComplete = missing.length === 0;
+
   openModal(orderDetailHtml(o) + `
     ${o.status === 'gr_received' ? `<div class="vchg-warn">📦 สินค้าเข้าคลังแล้ว (${fmtDate(o.gr_received_date)}) แต่ติด Remark —
       ตรวจสอบและเคลียร์ Remark ให้เรียบร้อยก่อนกดปิดงาน</div>` : ''}
+    ${!canComplete ? `<div class="vchg-warn" style="background:#fff1f0;border-color:#ffccc7;color:#cf1322;margin-top:10px">
+      ⚠️ <b>ยังปิดงานไม่ได้</b>: ขาดข้อมูล <b>${missing.join(', ')}</b><br/>
+      <small style="opacity:0.9">* ต้องมีข้อมูลวันที่รับสินค้า วันที่กลับคลัง และวันที่ WH RCV (นำเข้าจาก ReportRG) ครบทั้ง 3 รายการก่อนจึงจะปิดงานได้</small>
+    </div>` : ''}
     <hr/><label class="hint">แนบเอกสาร (ไม่บังคับ) แล้วปิดงานรายใบ — หรือใช้แท็บ "Upload ไฟล์ปิดงาน" เพื่อปิดจากไฟล์ ReportRG</label>
-    <input id="cfile" type="file" class="in"/>
-    <button class="btn red" id="done">ปิดงาน</button>
+    <input id="cfile" type="file" class="in" ${!canComplete ? 'disabled' : ''}/>
+    <button class="btn red" id="done" ${!canComplete ? 'disabled style="opacity:0.5;cursor:not-allowed"' : ''}>ปิดงาน</button>
     <div id="m-err" class="err"></div>`);
+  if (!canComplete) return;
   $('#done').onclick = async () => {
     const f = $('#cfile').files[0];
     const fd = new FormData(); if (f) fd.append('file', f);
@@ -1906,6 +1920,7 @@ function orderDetailHtml(o) {
     <div class="kv"><span>วันที่มอบหมาย</span><span>${o.assigned_at ? fmtDate(o.assigned_at) : '-'}</span></div>
     <div class="kv"><span>วันที่รับสินค้า</span><span>${o.received_date ? fmtDate(o.received_date) : '-'}</span></div>
     <div class="kv"><span>วันกลับคลัง</span><span>${o.returned_date ? fmtDate(o.returned_date) : '-'}</span></div>
+    <div class="kv"><span>วันที่ WH RCV</span><span>${o.gr_received_date ? fmtDate(o.gr_received_date) : '-'}</span></div>
     <div class="kv"><span>วันปิดงาน (Doc. WH)</span><span>${o.completed_date ? fmtDate(o.completed_date) : '-'}</span></div>
     ${o.completed_file_url ? `<div class="kv"><span>เอกสารจบงาน</span><a href="${esc(o.completed_file_url)}" target="_blank">เปิดไฟล์</a></div>` : ''}
     <div class="qr-wrap"><div id="qr-here"></div><span class="hint">QR เลขที่ RG</span></div>`;
