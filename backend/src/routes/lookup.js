@@ -59,4 +59,23 @@ router.get('/kpi-limits', async (_req, res) => {
   }
 });
 
+// ประกาศเริ่มต้นสำหรับ Role Vendor
+export const DEFAULT_ANNOUNCEMENT = {
+  enabled: false,
+  title: '',
+  message: '',
+  updated_at: null,
+  updated_by: null,
+};
+
+// GET /api/lookup/announcement — ประกาศสำหรับ Vendor (ทุก role ที่ล็อกอินอ่านได้)
+router.get('/announcement', async (_req, res) => {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'vendor_announcement').maybeSingle();
+    res.json(data?.value || DEFAULT_ANNOUNCEMENT);
+  } catch {
+    res.json(DEFAULT_ANNOUNCEMENT);
+  }
+});
+
 export default router;

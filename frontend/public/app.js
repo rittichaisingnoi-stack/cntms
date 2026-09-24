@@ -90,8 +90,8 @@ function menuFor(role) {
   const M = {
     vendor: ['myjobs', 'kpi', 'dashboard'],
     gr: ['grimport', 'grlist', 'kpi', 'dashboard'],
-    supervisor: ['import', 'unassigned', 'orders', 'arearules', 'users', 'kpi', 'dashboard'],
-    admin: ['import', 'unassigned', 'orders', 'arearules', 'users', 'kpi', 'dashboard'],
+    supervisor: ['import', 'unassigned', 'orders', 'arearules', 'users', 'kpi', 'announcement', 'dashboard'],
+    admin: ['import', 'unassigned', 'orders', 'arearules', 'users', 'kpi', 'announcement', 'dashboard'],
   };
   return (M[role] || ['dashboard']).map((id) => VIEWS[id]).filter(Boolean);
 }
@@ -1675,6 +1675,110 @@ VIEWS.kpi = {
   },
 };
 
+// ---- จัดการประกาศ (Supervisor / Admin) ----
+VIEWS.announcement = {
+  id: 'announcement', label: '📢 ประกาศ',
+  render: () => {
+    const w = el(`<div class="view">
+      <h3>📢 จัดการประกาศสำหรับ Vendor</h3>
+      <p class="hint">ตั้งค่าข้อความประกาศที่จะแสดงขึ้นมาทันทีเมื่อผู้ใช้งาน Role Vendor เข้าสู่ระบบ</p>
+
+      <div class="card ann-card">
+        <div class="ann-toggle-row">
+          <label class="ann-toggle-label">
+            <input type="checkbox" id="ann_enabled" class="ann-checkbox" />
+            <span class="ann-toggle-text">เปิดใช้งานประกาศนี้</span>
+          </label>
+          <span id="ann_status_badge" class="chip">ปิดใช้งาน</span>
+        </div>
+
+        <div style="margin-top:14px">
+          <label class="hint" style="font-weight:700">หัวข้อประกาศ</label>
+          <input id="ann_title" type="text" class="in" placeholder="เช่น แจ้งกำหนดการรับสินค้าช่วงวันหยุด / ข้อมูลสำคัญ" />
+        </div>
+
+        <div style="margin-top:8px">
+          <label class="hint" style="font-weight:700">เนื้อหาประกาศ</label>
+          <textarea id="ann_message" class="in" rows="8" placeholder="พิมพ์เนื้อหาประกาศที่ต้องการแจ้ง Vendor..." style="resize:vertical"></textarea>
+        </div>
+
+        <div id="ann_meta" class="hint" style="margin-top:6px">-</div>
+
+        <div class="row" style="margin-top:16px;flex-wrap:wrap">
+          <button class="btn primary" id="ann_save" style="width:auto;min-width:140px">💾 บันทึกประกาศ</button>
+          <button class="btn ghost" id="ann_preview" style="width:auto">👁️ ดูตัวอย่างประกาศ (Preview)</button>
+        </div>
+      </div>
+    </div>`);
+
+    const chk = $('#ann_enabled', w);
+    const badge = $('#ann_status_badge', w);
+    const titleIn = $('#ann_title', w);
+    const msgIn = $('#ann_message', w);
+    const meta = $('#ann_meta', w);
+
+    const updateBadge = () => {
+      if (chk.checked) {
+        badge.textContent = '🟢 เปิดใช้งานอยู่ (จะแสดงเมื่อ Vendor ล็อกอิน)';
+        badge.className = 'chip st-received';
+      } else {
+        badge.textContent = '⚪ ปิดใช้งานอยู่';
+        badge.className = 'chip';
+      }
+    };
+    chk.onchange = updateBadge;
+
+    async function loadData() {
+      try {
+        const d = await api('/admin/announcement');
+        chk.checked = !!d.enabled;
+        titleIn.value = d.title || '';
+        msgIn.value = d.message || '';
+        updateBadge();
+        if (d.updated_at) {
+          meta.textContent = `อัปเดตล่าสุด: ${fmtDate(d.updated_at)} โดย ${d.updated_by || 'Supervisor'}`;
+        } else {
+          meta.textContent = 'ยังไม่มีประวัติการบันทึกประกาศ';
+        }
+      } catch (e) {
+        meta.textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + e.message;
+      }
+    }
+
+    $('#ann_save', w).onclick = async () => {
+      try {
+        const payload = {
+          enabled: chk.checked,
+          title: titleIn.value.trim(),
+          message: msgIn.value.trim(),
+        };
+        const r = await api('/admin/announcement', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        toast('บันทึกประกาศเรียบร้อยแล้ว');
+        if (r.announcement?.updated_at) {
+          meta.textContent = `อัปเดตล่าสุด: ${fmtDate(r.announcement.updated_at)} โดย ${r.announcement.updated_by || 'Supervisor'}`;
+        }
+      } catch (e) {
+        alert('เกิดข้อผิดพลาดในการบันทึก: ' + e.message);
+      }
+    };
+
+    $('#ann_preview', w).onclick = () => {
+      openVendorAnnouncementModal({
+        title: titleIn.value.trim() || 'ประกาศแจ้งเตือน',
+        message: msgIn.value.trim() || 'ตัวอย่างเนื้อหาประกาศ...',
+        updated_at: new Date().toISOString(),
+      });
+    };
+
+    loadData();
+    return w;
+  },
+};
+
 // ---- Dashboard (all roles) ----
 VIEWS.dashboard = {
   id: 'dashboard', label: 'Dashboard',
@@ -1841,6 +1945,8 @@ function vendorDashboard() {
       <div class="vhero-badge" id="vh-open">—</div>
     </header>
 
+    <div id="v-ann-box"></div>
+
     <section class="vsection" aria-label="สิ่งที่ต้องลงมือ">
       <div class="vsec-head"><h4>สิ่งที่ต้องลงมือ</h4><span class="vsec-note">อัปเดตวันที่ในแท็บ “งานของฉัน”</span></div>
       <div id="v-actions" class="vgrid">${vSkeleton(2)}</div>
@@ -1910,6 +2016,26 @@ function vendorDashboard() {
   }).catch((e) => {
     $('#v-actions', w).innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
   });
+
+  api('/lookup/announcement').then((ann) => {
+    if (ann && ann.enabled && (ann.title || ann.message)) {
+      const box = $('#v-ann-box', w);
+      if (box) {
+        box.innerHTML = `<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:#eef4fd;border-color:#b8d1f8;border-left:4px solid var(--blue);padding:12px 16px;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:22px">📢</span>
+            <div>
+              <b style="color:var(--blue);font-size:15px">${esc(ann.title || 'ประกาศแจ้งเตือน')}</b>
+              ${ann.updated_at ? `<div class="hint" style="margin:2px 0 0">อัปเดต: ${fmtDate(ann.updated_at)}</div>` : ''}
+            </div>
+          </div>
+          <button class="btn ghost" id="v-ann-view" style="width:auto;padding:6px 14px;font-size:13px">อ่านประกาศ</button>
+        </div>`;
+        const btn = $('#v-ann-view', box);
+        if (btn) btn.onclick = () => openVendorAnnouncementModal(ann);
+      }
+    }
+  }).catch(() => {});
 
   return w;
 }
@@ -2037,6 +2163,42 @@ function toast(msg) {
   setTimeout(() => t.remove(), 2500);
 }
 
+// ---------- Vendor Announcement Modal ----------
+function openVendorAnnouncementModal(ann) {
+  const title = ann?.title || 'ประกาศแจ้งเตือน';
+  const msg = ann?.message || '';
+  const dateStr = ann?.updated_at ? fmtDate(ann.updated_at) : '';
+  openModal(`<div class="ann-modal-wrap">
+    <div class="ann-modal-header">
+      <span class="ann-modal-icon">📢</span>
+      <div class="ann-modal-title-box">
+        <h3 class="ann-modal-title">${esc(title)}</h3>
+        ${dateStr ? `<span class="ann-modal-date">วันที่ประกาศ: ${esc(dateStr)}</span>` : ''}
+      </div>
+    </div>
+    <div class="ann-modal-body">${esc(msg)}</div>
+    <div class="ann-modal-footer">
+      <button class="btn primary" id="ann-modal-ok">รับทราบและปิดประกาศ</button>
+    </div>
+  </div>`);
+
+  const okBtn = document.getElementById('ann-modal-ok');
+  if (okBtn) okBtn.onclick = closeModal;
+}
+
+// ตรวจสอบและแสดงประกาศสำหรับ Role Vendor เมื่อเข้าสู่ระบบ
+async function checkVendorAnnouncement() {
+  if (me?.role !== 'vendor') return;
+  try {
+    const ann = await api('/lookup/announcement');
+    if (ann && ann.enabled && (ann.title || ann.message)) {
+      openVendorAnnouncementModal(ann);
+    }
+  } catch (e) {
+    console.error('Failed to load announcement', e);
+  }
+}
+
 // ---------- auth ----------
 function showLogin() { $('#login').classList.remove('hidden'); $('#app').classList.add('hidden'); }
 async function showApp() {
@@ -2044,6 +2206,7 @@ async function showApp() {
   // โหลดหมวด + เกณฑ์ KPI + รายชื่อ Vendor ก่อน render (Vendor ใช้แสดงชื่อในตารางออเดอร์)
   await Promise.all([loadNoteCategories(), loadKpiLimits(), loadVendorList()]);
   renderShell();
+  checkVendorAnnouncement();
 }
 function doLogout(silent) {
   if (!silent) api('/auth/logout', { method: 'POST' }).catch(() => {});

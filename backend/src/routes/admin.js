@@ -199,6 +199,39 @@ router.put('/kpi-limits', async (req, res) => {
   res.json({ ok: true, ...limits });
 });
 
+// ---- ประกาศสำหรับ Vendor (vendor_announcement) — Supervisor เปิด-ปิดและกรอกข้อมูล ----
+import { DEFAULT_ANNOUNCEMENT } from './lookup.js';
+
+// GET /api/admin/announcement — อ่านประกาศปัจจุบัน
+router.get('/announcement', async (_req, res) => {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'vendor_announcement').maybeSingle();
+    res.json(data?.value || DEFAULT_ANNOUNCEMENT);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/admin/announcement — บันทึกประกาศ { enabled, title, message }
+router.put('/announcement', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const announcement = {
+      enabled: Boolean(b.enabled),
+      title: String(b.title || '').trim(),
+      message: String(b.message || '').trim(),
+      updated_at: new Date().toISOString(),
+      updated_by: req.user?.display_name || req.user?.username || 'Supervisor',
+    };
+    const { error } = await supabase.from('app_settings')
+      .upsert({ key: 'vendor_announcement', value: announcement, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, announcement });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---- Archive: order ที่ปิดงานแล้ว + เก่ากว่า 6 เดือน ----
 // flow: (1) count เตือนในแบนเนอร์ → (2) download Excel ลงเครื่อง → (3) delete หลังกดยืนยัน
 const ARCHIVE_MONTHS = 6;

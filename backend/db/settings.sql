@@ -19,5 +19,10 @@ insert into app_settings (key, value)
 values ('kpi_limits', '{"d1":3,"d2":3,"d3":3}'::jsonb)
 on conflict (key) do nothing;
 
+-- ประกาศสำหรับ Vendor — Supervisor เปิด/ปิด และพิมพ์ข้อความจากหน้าเว็บได้
+insert into app_settings (key, value)
+values ('vendor_announcement', '{"enabled":false,"title":"","message":""}'::jsonb)
+on conflict (key) do nothing;
+
 -- บังคับ PostgREST รีโหลด schema
 NOTIFY pgrst, 'reload schema';
