@@ -93,12 +93,36 @@ router.get('/summary', async (req, res) => {
   }
 });
 
+// ลำดับสถานะสำหรับเรียงรายงานรายออเดอร์:
+// 1. มอบหมายแล้ว (assigned_vendor)
+// 2. รับสินค้าแล้ว (received)
+// 3. นำกลับคลังแล้ว (returned)
+// 4. รับสินค้าเข้าระบบ (gr_received)
+// 5. ปิดงาน (completed)
+const STATUS_RANK = {
+  assigned_vendor: 1,
+  received: 2,
+  returned: 3,
+  gr_received: 4,
+  completed: 5,
+};
+
+function sortKpiOrders(rows) {
+  return [...rows].sort((a, b) => {
+    const ra = STATUS_RANK[a.status] ?? 99;
+    const rb = STATUS_RANK[b.status] ?? 99;
+    if (ra !== rb) return ra - rb;
+    return String(a.rg_no || '').localeCompare(String(b.rg_no || ''), undefined, { numeric: true });
+  });
+}
+
 // GET /api/kpi/orders?vendor_id&from&to — KPI รายออเดอร์
 router.get('/orders', async (req, res) => {
   try {
     const rows = await fetchRows(req.user, req.query);
-    const names = await vendorNames([...new Set(rows.map((r) => r.vendor_id))]);
-    res.json(rows.map((r) => ({
+    const sorted = sortKpiOrders(rows);
+    const names = await vendorNames([...new Set(sorted.map((r) => r.vendor_id))]);
+    res.json(sorted.map((r) => ({
       ...r,
       vendor_name: names.get(r.vendor_id) || `#${r.vendor_id}`,
       ...kpiOf(r),
@@ -126,8 +150,9 @@ router.get('/export', async (req, res) => {
       }));
       name = 'kpi-summary';
     } else {
-      const names = await vendorNames([...new Set(rows.map((r) => r.vendor_id))]);
-      sheetRows = rows.map((r) => {
+      const sorted = sortKpiOrders(rows);
+      const names = await vendorNames([...new Set(sorted.map((r) => r.vendor_id))]);
+      sheetRows = sorted.map((r) => {
         const k = kpiOf(r);
         return {
           'เลขที่ RG': r.rg_no,

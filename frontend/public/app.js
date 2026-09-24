@@ -1631,6 +1631,13 @@ VIEWS.kpi = {
         const p = { ...range() }; if (vendor_id) p.vendor_id = vendor_id;
         const rows = await api('/kpi/orders?' + new URLSearchParams(p));
         if (!rows.length) { box.innerHTML = '<div class="empty">ไม่มีรายการ</div>'; return; }
+        const STATUS_RANK = { assigned_vendor: 1, received: 2, returned: 3, gr_received: 4, completed: 5 };
+        rows.sort((a, b) => {
+          const ra = STATUS_RANK[a.status] ?? 99;
+          const rb = STATUS_RANK[b.status] ?? 99;
+          if (ra !== rb) return ra - rb;
+          return String(a.rg_no || '').localeCompare(String(b.rg_no || ''), undefined, { numeric: true });
+        });
         const tbl = el(`<div class="table-scroll"><table class="otable">
           <thead><tr><th>เลขที่ RG</th><th>Vendor</th><th>ร้านค้า</th><th>สถานะ</th>
           <th>วันที่พิมพ์</th><th>มอบหมาย</th><th>รับสินค้า</th><th>กลับคลัง</th><th>ปิดงาน</th>
