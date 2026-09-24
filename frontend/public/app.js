@@ -19,7 +19,12 @@ const api = (p, o = {}) => {
     if (!ct.includes('application/json')) { if (!r.ok) throw new Error(r.statusText); return r; }
     const j = await r.json().catch(() => ({}));
     if (r.status === 401) { doLogout(true); throw new Error(j.error || 'กรุณาเข้าสู่ระบบ'); }
-    if (!r.ok) throw new Error(j.error || r.statusText);
+    if (!r.ok) {
+      const err = new Error(j.message || j.error || r.statusText);
+      err.data = j;
+      err.status = r.status;
+      throw err;
+    }
     return j;
   });
 };
@@ -1313,9 +1318,53 @@ VIEWS.arearules = {
     const fieldLabel = (k) => (FIELDS.find((f) => f.key === k)?.label) || k;
     const vendorName = (id) => (VENDORS.find((v) => v.id === id)?.display_name) || `#${id}`;
 
+    let CURRENT_RULES = [];
+
+    function showDuplicateModal({ rule_field, match_value, new_vendor_id, existing, onReplace }) {
+      const fieldTxt = fieldLabel(rule_field);
+      const oldVendor = existing?.vendor_name || vendorName(existing?.vendor_id);
+      const newVendor = vendorName(new_vendor_id);
+
+      openModal(`<div class="ann-modal-wrap">
+        <div class="ann-modal-header" style="border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px">
+          <span style="font-size:28px">⚠️</span>
+          <div style="flex:1">
+            <h3 style="margin:0 0 4px;font-size:18px;color:var(--red)">พบกติกาซ้ำในระบบ</h3>
+            <div class="hint" style="margin:0">มีกติกาสำหรับเงื่อนไขนี้อยู่แล้วในระบบ</div>
+          </div>
+        </div>
+
+        <div style="background:#fff6f8;border:1px solid #f2b6c2;border-radius:10px;padding:14px;margin-bottom:14px">
+          <div style="font-size:14px;color:var(--txt);margin-bottom:6px">
+            เงื่อนไข: <b>${esc(fieldTxt)}</b> = "<b>${esc(match_value)}</b>"
+          </div>
+          <div style="font-size:13px;color:var(--muted)">
+            ปัจจุบันผูกกับ Vendor: <b style="color:var(--blue)">${esc(oldVendor)}</b>
+            ${existing?.enabled === false ? ' <span class="chip">(ปิดใช้งาน)</span>' : ' <span class="chip st-received">(เปิดใช้งาน)</span>'}
+          </div>
+        </div>
+
+        <p style="font-size:14px;color:var(--txt);margin:0 0 16px;line-height:1.5">
+          ต้องการ <b>แทนที่ (Replace)</b> กติกาเดิมด้วย Vendor ใหม่ (<b style="color:var(--blue)">${esc(newVendor)}</b>) หรือไม่?
+        </p>
+
+        <div class="row" style="gap:10px">
+          <button class="btn primary" id="dup_replace" style="flex:1;background:var(--red)">🔄 แทนที่ (Replace)</button>
+          <button class="btn ghost" id="dup_cancel" style="flex:1">ยกเลิก</button>
+        </div>
+      </div>`);
+
+      $('#dup_replace').onclick = async () => {
+        closeModal();
+        await onReplace();
+      };
+      $('#dup_cancel').onclick = closeModal;
+    }
+
     async function loadRules() {
       const list = $('#rlist', w); list.innerHTML = 'กำลังโหลด…';
       const rules = await api('/admin/area-rules');
+      CURRENT_RULES = rules || [];
       list.innerHTML = rules.length ? '' : '<div class="empty">ยังไม่มี Rule</div>';
       rules.forEach((r) => {
         const c = el(`<div class="rg ${r.enabled ? '' : 'off'}">
@@ -1335,17 +1384,60 @@ VIEWS.arearules = {
             ${VENDORS.map((v) => `<option value="${v.id}" ${r.vendor_id === v.id ? 'selected' : ''}>${esc(v.display_name)}</option>`).join('')}</select>
             <button class="btn primary" id="er_save">บันทึก</button><div id="m-err" class="err"></div>`);
           $('#er_save').onclick = async () => {
-            try {
-              await api('/admin/area-rules/' + r.id, {
-                method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  rule_field: $('#er_field').value,
-                  match_value: $('#er_val').value.trim(),
-                  vendor_id: Number($('#er_vendor').value) || null,
-                }),
+            const newField = $('#er_field').value;
+            const newVal = $('#er_val').value.trim();
+            const newVId = Number($('#er_vendor').value) || null;
+            const mErr = $('#m-err');
+            mErr.textContent = '';
+
+            if (!newVal) { mErr.textContent = 'กรุณากรอกค่าที่ต้องตรง'; return; }
+            if (!newVId) { mErr.textContent = 'กรุณาเลือก Vendor'; return; }
+
+            const dupOther = CURRENT_RULES.find(
+              (o) => o.id !== r.id && o.rule_field === newField && String(o.match_value || '').trim().toLowerCase() === newVal.toLowerCase()
+            );
+
+            const doUpdate = async (replace = false) => {
+              try {
+                await api('/admin/area-rules/' + r.id, {
+                  method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    rule_field: newField,
+                    match_value: newVal,
+                    vendor_id: newVId,
+                    replace,
+                  }),
+                });
+                closeModal();
+                toast(replace ? 'แทนที่กติกาเดิมเรียบร้อยแล้ว' : 'แก้ไขกติกาเรียบร้อยแล้ว');
+                loadRules();
+              } catch (e) {
+                if (e.data?.error === 'DUPLICATE_KEY') {
+                  showDuplicateModal({
+                    rule_field: newField,
+                    match_value: newVal,
+                    new_vendor_id: newVId,
+                    existing: e.data.existing,
+                    onReplace: () => doUpdate(true),
+                  });
+                } else {
+                  mErr.textContent = e.message;
+                }
+              }
+            };
+
+            if (dupOther) {
+              showDuplicateModal({
+                rule_field: newField,
+                match_value: newVal,
+                new_vendor_id: newVId,
+                existing: dupOther,
+                onReplace: () => doUpdate(true),
               });
-              closeModal(); loadRules();
-            } catch (e) { $('#m-err').textContent = e.message; }
+              return;
+            }
+
+            await doUpdate(false);
           };
         };
         c.querySelector('[data-act=toggle]').onclick = async () => {
@@ -1363,18 +1455,60 @@ VIEWS.arearules = {
       });
     }
     $('#r_add', w).onclick = async () => {
-      try {
-        await api('/admin/area-rules', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            rule_field: $('#r_field', w).value,
-            match_value: $('#r_val', w).value.trim(),
-            vendor_id: Number($('#r_vendor', w).value) || null,
-          }),
+      const field = $('#r_field', w).value;
+      const val = $('#r_val', w).value.trim();
+      const vId = Number($('#r_vendor', w).value) || null;
+      const errBox = $('#r_err', w);
+      errBox.textContent = '';
+
+      if (!val) { errBox.textContent = 'กรุณากรอกค่าที่ต้องตรง'; return; }
+      if (!vId) { errBox.textContent = 'กรุณาเลือก Vendor'; return; }
+
+      const exist = CURRENT_RULES.find(
+        (r) => r.rule_field === field && String(r.match_value || '').trim().toLowerCase() === val.toLowerCase()
+      );
+
+      const doSave = async (replace = false) => {
+        try {
+          await api('/admin/area-rules', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              rule_field: field,
+              match_value: val,
+              vendor_id: vId,
+              replace,
+            }),
+          });
+          $('#r_val', w).value = ''; errBox.textContent = '';
+          toast(replace ? 'แทนที่กติกาเดิมเรียบร้อยแล้ว' : 'เพิ่มกติกาเรียบร้อยแล้ว');
+          loadRules();
+        } catch (e) {
+          if (e.data?.error === 'DUPLICATE_KEY') {
+            showDuplicateModal({
+              rule_field: field,
+              match_value: val,
+              new_vendor_id: vId,
+              existing: e.data.existing,
+              onReplace: () => doSave(true),
+            });
+          } else {
+            errBox.textContent = e.message;
+          }
+        }
+      };
+
+      if (exist) {
+        showDuplicateModal({
+          rule_field: field,
+          match_value: val,
+          new_vendor_id: vId,
+          existing: exist,
+          onReplace: () => doSave(true),
         });
-        $('#r_val', w).value = ''; $('#r_err', w).textContent = '';
-        loadRules();
-      } catch (e) { $('#r_err', w).textContent = e.message; }
+        return;
+      }
+
+      await doSave(false);
     };
     $('#r_apply', w).onclick = async () => {
       const out = $('#r_apply_out', w); out.textContent = 'กำลังคำนวณ…';

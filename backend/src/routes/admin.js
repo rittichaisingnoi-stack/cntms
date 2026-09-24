@@ -105,12 +105,66 @@ router.get('/area-rules', async (_req, res) => {
 });
 
 router.post('/area-rules', async (req, res) => {
-  const { rule_field, match_value, area, vendor_id, enabled } = req.body || {};
+  const { rule_field, match_value, area, vendor_id, enabled, replace } = req.body || {};
   if (!RULE_FIELDS[rule_field]) return res.status(400).json({ error: 'rule_field ไม่ถูกต้อง' });
-  if (!match_value) return res.status(400).json({ error: 'ต้องมีค่าที่ต้องตรง (match_value)' });
+  const normVal = String(match_value || '').trim();
+  if (!normVal) return res.status(400).json({ error: 'ต้องมีค่าที่ต้องตรง (match_value)' });
   if (!vendor_id) return res.status(400).json({ error: 'ต้องเลือก Vendor' });
+
+  // ตรวจสอบว่ามี rule ที่ rule_field เดียวกันและ match_value เดียวกันอยู่แล้วหรือไม่ (case-insensitive)
+  const { data: allRules, error: fetchErr } = await supabase
+    .from('area_rules')
+    .select('id, priority, rule_field, match_value, area, vendor_id, enabled')
+    .eq('rule_field', rule_field);
+  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+
+  const existing = (allRules || []).find(
+    (r) => String(r.match_value || '').trim().toLowerCase() === normVal.toLowerCase()
+  );
+
+  if (existing) {
+    if (!replace) {
+      let oldVendorName = `#${existing.vendor_id}`;
+      const { data: vUser } = await supabase.from('users').select('display_name').eq('id', existing.vendor_id).maybeSingle();
+      if (vUser?.display_name) oldVendorName = vUser.display_name;
+
+      return res.status(409).json({
+        error: 'DUPLICATE_KEY',
+        message: `มีกติกานี้ในระบบแล้ว: ${RULE_FIELDS[rule_field]} = "${existing.match_value}" (ปัจจุบันผูกกับ Vendor: ${oldVendorName})`,
+        existing: {
+          id: existing.id,
+          rule_field: existing.rule_field,
+          rule_field_label: RULE_FIELDS[rule_field],
+          match_value: existing.match_value,
+          vendor_id: existing.vendor_id,
+          vendor_name: oldVendorName,
+          area: existing.area,
+          enabled: existing.enabled,
+        },
+      });
+    }
+
+    // กรณีเลือก Replace: ให้อัปเดต Rule เดิมด้วย Vendor/Area ใหม่
+    const patch = {
+      priority: FIELD_PRIORITY[rule_field],
+      match_value: normVal,
+      area: area || null,
+      vendor_id,
+      enabled: enabled !== false,
+      updated_at: new Date().toISOString(),
+    };
+    const { data: updated, error: updateErr } = await supabase
+      .from('area_rules')
+      .update(patch)
+      .eq('id', existing.id)
+      .select('*')
+      .single();
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+    return res.json({ ...updated, replaced: true });
+  }
+
   const { data, error } = await supabase.from('area_rules')
-    .insert({ priority: FIELD_PRIORITY[rule_field], rule_field, match_value, area: area || null, vendor_id, enabled: enabled !== false })
+    .insert({ priority: FIELD_PRIORITY[rule_field], rule_field, match_value: normVal, area: area || null, vendor_id, enabled: enabled !== false })
     .select('*').single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -125,6 +179,38 @@ router.put('/area-rules/:id', async (req, res) => {
     if (!RULE_FIELDS[patch.rule_field]) return res.status(400).json({ error: 'rule_field ไม่ถูกต้อง' });
     patch.priority = FIELD_PRIORITY[patch.rule_field]; // priority ผูกกับ field เสมอ
   }
+  if (patch.match_value) {
+    patch.match_value = String(patch.match_value).trim();
+  }
+
+  // ตรวจสอบความซ้ำกับ Rule อื่นกรณีแก้ไข rule_field หรือ match_value
+  if (patch.rule_field || patch.match_value) {
+    const { data: currentRule } = await supabase.from('area_rules').select('*').eq('id', req.params.id).maybeSingle();
+    const targetField = patch.rule_field || currentRule?.rule_field;
+    const targetVal = (patch.match_value || currentRule?.match_value || '').trim().toLowerCase();
+
+    const { data: others } = await supabase
+      .from('area_rules')
+      .select('id, rule_field, match_value, vendor_id')
+      .eq('rule_field', targetField)
+      .neq('id', req.params.id);
+
+    const dup = (others || []).find((r) => String(r.match_value || '').trim().toLowerCase() === targetVal);
+    if (dup && !req.body.replace) {
+      let oldVendorName = `#${dup.vendor_id}`;
+      const { data: vUser } = await supabase.from('users').select('display_name').eq('id', dup.vendor_id).maybeSingle();
+      if (vUser?.display_name) oldVendorName = vUser.display_name;
+      return res.status(409).json({
+        error: 'DUPLICATE_KEY',
+        message: `มีกติกานี้ในระบบแล้ว: ${RULE_FIELDS[targetField]} = "${dup.match_value}" (ผูกกับ Vendor: ${oldVendorName})`,
+        existing: { id: dup.id, vendor_id: dup.vendor_id, vendor_name: oldVendorName },
+      });
+    }
+    if (dup && req.body.replace) {
+      await supabase.from('area_rules').delete().eq('id', dup.id);
+    }
+  }
+
   const { error } = await supabase.from('area_rules').update(patch).eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
