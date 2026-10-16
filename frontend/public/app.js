@@ -95,8 +95,8 @@ function menuFor(role) {
   const M = {
     vendor: ['myjobs', 'kpi', 'dashboard'],
     gr: ['grimport', 'grlist', 'kpi', 'dashboard'],
-    supervisor: ['import', 'unassigned', 'orders', 'arearules', 'users', 'kpi', 'announcement', 'dashboard'],
-    admin: ['import', 'unassigned', 'orders', 'arearules', 'users', 'kpi', 'announcement', 'dashboard'],
+    supervisor: ['import', 'unassigned', 'orders', 'arearules', 'sla_master', 'users', 'kpi', 'dashboard', 'announcement'],
+    admin: ['import', 'unassigned', 'orders', 'arearules', 'sla_master', 'users', 'kpi', 'dashboard', 'announcement'],
   };
   return (M[role] || ['dashboard']).map((id) => VIEWS[id]).filter(Boolean);
 }
@@ -341,6 +341,8 @@ VIEWS.myjobs = {
     </div>
     <div class="assign-bar hidden" id="jbar">
       <span id="jcount" class="acount">0</span>
+      <label class="jbar-f"><span>แผนเข้ารับ</span>
+        <input id="jbar-plan-date" type="date" class="in" title="แผนนัดเข้ารับ (เฉพาะงานที่ยังไม่มีแผน)"/></label>
       <label class="jbar-f"><span>วันที่รับ</span>
         <input id="jbar-recv-date" type="date" class="in" min="2020-01-01" max="${todayStr()}" title="วันที่รับสินค้าจริง (กรอกวันล่วงหน้าไม่ได้)"/></label>
       <label class="jbar-f"><span>วันกลับคลัง</span>
@@ -394,7 +396,7 @@ VIEWS.myjobs = {
             <th>เลขที่ RG</th><th>สถานะ</th><th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th>
             <th>อำเภอ</th><th>จังหวัด</th>
             <th class="num">กล่อง</th>
-            <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่มอบหมาย</th><th class="dt">วันที่รับ</th><th class="dt">วันกลับคลัง</th>
+            <th class="dt">วันที่พิมพ์</th><th class="dt">วันที่มอบหมาย</th><th class="dt">แผนเข้ารับ</th><th class="dt">แผนส่งกลับ</th><th class="dt">วันที่รับ</th><th class="dt">วันกลับคลัง</th>
             <th>หมวด</th>
           </tr></thead><tbody></tbody></table></div>`);
         const tb = $('tbody', tblWrap);
@@ -412,7 +414,7 @@ VIEWS.myjobs = {
             <td>${esc(o.district || '-')}</td>
             <td>${esc(o.province || '-')}</td>
             <td class="num">${o.qty_boxes ?? 0}</td>
-            ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.received_date)}${dcell(o.returned_date)}
+            ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.plan_pickup_date)}${planReturnCell(o)}${dcell(o.received_date)}${dcell(o.returned_date)}
             <td class="l">${noteCats(o)}</td></tr>`);
           const cb = $('.osel', tr);
           const setRow = () => { cb.checked ? selected.add(o.rg_no) : selected.delete(o.rg_no); tr.classList.toggle('on', cb.checked); syncGroupChk(g, items); syncSelAll(); updateBar(); };
@@ -502,6 +504,7 @@ VIEWS.myjobs = {
 
     // ล้างช่องกรอกกลับเป็นค่าเริ่มต้นหลังบันทึกสำเร็จ
     const clearBarInputs = () => {
+      if ($('#jbar-plan-date', w)) $('#jbar-plan-date', w).value = '';
       $('#jbar-recv-date', w).value = '';
       $('#jbar-ret-date', w).value = '';
       $('#jbar-cat', w).value = '';
@@ -510,8 +513,9 @@ VIEWS.myjobs = {
       $('#jbar-unit', w).value = '';
     };
 
-    // ปุ่มเดียวบันทึกทั้ง 4 ค่า — ช่องไหนไม่กรอกก็ข้ามไป ไม่ไปทับค่าเดิมในฐานข้อมูล
+    // ปุ่มเดียวบันทึกทั้ง 5 ค่า — ช่องไหนไม่กรอกก็ข้ามไป ไม่ไปทับค่าเดิมในฐานข้อมูล
     $('#jbar-save', w).onclick = async () => {
+      const planPickup = $('#jbar-plan-date', w)?.value;
       const recv = $('#jbar-recv-date', w).value;
       const ret = $('#jbar-ret-date', w).value;
       const category = $('#jbar-cat', w).value.trim();
@@ -521,7 +525,7 @@ VIEWS.myjobs = {
       const return_qty = qtyEl.value.trim();
       const unit = $('#jbar-unit', w).value.trim();
 
-      if (!recv && !ret && !category && !reason && !return_qty && !unit) { toast('กรุณากรอกอย่างน้อย 1 ช่อง'); return; }
+      if (!planPickup && !recv && !ret && !category && !reason && !return_qty && !unit) { toast('กรุณากรอกอย่างน้อย 1 ช่อง'); return; }
       const today = todayStr();
       if (recv && recv > today) { toast('วันที่รับ: กรอกวันล่วงหน้าไม่ได้ — ทำเสร็จแล้วค่อยกรอก'); return; }
       if (recv && ret && ret < recv) { toast('วันกลับคลังต้องไม่น้อยกว่าวันที่รับ'); return; }
@@ -535,8 +539,12 @@ VIEWS.myjobs = {
       const msgs = [];
       let badDates = [];
       try {
-        if (recv || ret) {
-          const r = await bulkDates({ ...(recv ? { received_date: recv } : {}), ...(ret ? { returned_date: ret } : {}) });
+        if (planPickup || recv || ret) {
+          const r = await bulkDates({
+            ...(planPickup ? { plan_pickup_date: planPickup } : {}),
+            ...(recv ? { received_date: recv } : {}),
+            ...(ret ? { returned_date: ret } : {}),
+          });
           badDates = r.bad_dates || [];
           msgs.push(`วันที่ ${r.updated} รายการ`
             + (r.locked ? ` (ข้ามงานปิดแล้ว ${r.locked})` : '')
@@ -586,7 +594,10 @@ async function openVendorJob(o, reload) {
     <hr/>
     ${o.status === 'completed'
       ? '<p class="hint">🔒 งานปิดแล้ว — แก้ไขวันที่ไม่ได้</p>'
-      : `<label class="hint">วันที่รับสินค้าจริง</label>
+      : `<label class="hint">แผนนัดเข้ารับ ${o.plan_pickup_date ? '<span class="chip" style="margin-left:6px">กำหนดแล้ว (แก้ไขไม่ได้)</span>' : '<span class="chip st-assigned_vendor" style="margin-left:6px">ยังไม่มีแผน — สามารถกรอกได้</span>'}</label>
+    <div class="row"><input id="pdate" type="date" class="in" value="${o.plan_pickup_date ? String(o.plan_pickup_date).slice(0,10) : ''}" ${o.plan_pickup_date ? 'disabled style="background:#eef1f7;color:#6b7484"' : ''}/>
+    ${!o.plan_pickup_date ? '<button class="btn ghost" id="bplan" style="width:auto">บันทึกแผน</button>' : ''}</div>
+    <label class="hint">วันที่รับสินค้าจริง</label>
     <div class="row"><input id="rdate" type="date" class="in" min="2020-01-01" max="${todayStr()}" value="${o.received_date ? String(o.received_date).slice(0,10) : ''}"/>
     <button class="btn primary" id="brecv" style="width:auto">บันทึกรับ</button></div>
     <label class="hint">วันนำสินค้ากลับคืนคลังจริง</label>
@@ -613,6 +624,8 @@ async function openVendorJob(o, reload) {
       closeModal(); reload();
     } catch (e) { $('#m-err').textContent = e.message; }
   };
+  const bplan = $('#bplan');
+  if (bplan) bplan.onclick = save(() => ({ plan_pickup_date: $('#pdate').value || undefined }));
   const brecv = $('#brecv');
   if (brecv) brecv.onclick = save(() => ({ received_date: $('#rdate').value || undefined }));
   const bret = $('#bret');
@@ -918,6 +931,29 @@ VIEWS.orders = {
   },
 };
 
+function planReturnCell(o) {
+  if (!o.plan_return_date) return '<td class="dt"><span class="muted">-</span></td>';
+  // หากนำกลับคลังแล้ว หรือ ปิดงานแล้ว ไม่ต้องเตือนสถานะค้าง
+  if (['returned', 'gr_received', 'completed'].includes(o.status)) {
+    return `<td class="dt">${fmtDate(o.plan_return_date)}</td>`;
+  }
+  const today = todayStr();
+  const dStr = String(o.plan_return_date).slice(0, 10);
+  const diffDays = Math.round((new Date(dStr) - new Date(today)) / 86400000);
+
+  if (diffDays < 0) {
+    // 🔴 เกินกำหนดส่งกลับ (Overdue)
+    return `<td class="dt"><span class="chip r" style="font-weight:700" title="เกินกำหนดส่งกลับ ${Math.abs(diffDays)} วัน">${fmtDate(o.plan_return_date)} ⚠️</span></td>`;
+  } else if (diffDays <= 2) {
+    // 🟠 ใกล้ครบกำหนด (เหลือ ≤ 2 วัน หรือ วันนี้)
+    const label = diffDays === 0 ? 'ครบกำหนดวันนี้' : `เหลือ ${diffDays} วัน`;
+    return `<td class="dt"><span class="chip w" style="font-weight:700" title="ใกล้ครบกำหนด (${label})">${fmtDate(o.plan_return_date)} ⏳</span></td>`;
+  } else {
+    // 🟢 ปกติ (เหลือเวลามากกว่า 2 วัน)
+    return `<td class="dt"><span class="chip g" title="ปกติ (เหลืออีก ${diffDays} วัน)">${fmtDate(o.plan_return_date)}</span></td>`;
+  }
+}
+
 // ตารางรายละเอียดออเดอร์ครบทุกคอลัมน์ + 5 วันที่ (ใช้ร่วมหลายหน้า)
 //   select (ทางเลือก): { selected:Set<rg_no>, onChange() } — เปิดคอลัมน์ checkbox + เลือกทั้งหมด
 //   opt.onVendorChange (ทางเลือก): (order) => {} — เปิดคอลัมน์ Vendor + ปุ่มเปลี่ยน Vendor รายใบ
@@ -941,7 +977,7 @@ function ordersTable(data, onRowClick, select, opt = {}) {
       ${select ? '<th><input type="checkbox" class="selall" title="เลือกทั้งหมด"/></th>' : ''}
       <th class="no">เลขที่ RG</th><th class="st">สถานะ</th>${withVendor ? '<th class="vend">Vendor</th>' : ''}<th>เขต</th><th class="code">Sold To Code</th><th class="code">Ship To</th><th>Sold To</th><th>จังหวัด</th>
       <th class="num">กล่อง</th><th class="num">ชิ้น</th>
-      <th class="dt">วันที่พิมพ์</th><th class="dt">มอบหมาย</th><th class="dt">รับสินค้า</th><th class="dt">กลับคลัง</th><th class="dt">ปิดงาน</th><th></th>
+      <th class="dt">วันที่พิมพ์</th><th class="dt">มอบหมาย</th><th class="dt">แผนเข้ารับ</th><th class="dt">แผนส่งกลับ</th><th class="dt">รับสินค้า</th><th class="dt">กลับคลัง</th><th class="dt">ปิดงาน</th><th></th>
     </tr></thead><tbody></tbody></table></div>`);
   const tb = $('tbody', wrap);
   const selall = select ? $('.selall', wrap) : null;
@@ -964,7 +1000,7 @@ function ordersTable(data, onRowClick, select, opt = {}) {
       <td>${esc(o.province || '-')}</td>
       <td class="num">${o.qty_boxes ?? 0}</td>
       <td class="num">${o.qty_pieces ?? 0}</td>
-      ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.received_date)}${dcell(o.returned_date)}${dcell(o.completed_date)}
+      ${dcell(o.rg_date)}${dcell(o.assigned_at)}${dcell(o.plan_pickup_date)}${planReturnCell(o)}${dcell(o.received_date)}${dcell(o.returned_date)}${dcell(o.completed_date)}
       <td class="edit">✏️</td></tr>`);
     // ปุ่มเปลี่ยน Vendor — กันไม่ให้ไปเปิดโมดัลแก้ไข/ติ๊ก checkbox ของแถว
     const vbtn = withVendor ? $('.vchg', tr) : null;
@@ -998,6 +1034,8 @@ function dateTimelineHtml(o) {
   const steps = [
     ['rg_date', 'วันที่พิมพ์', 'สร้างออเดอร์จากรายงาน', '📄'],
     ['assigned_at', 'วันที่มอบหมาย', 'จัดพื้นที่ให้ Vendor', '📌'],
+    ['plan_pickup_date', 'แผนนัดเข้ารับ', 'กำหนดวันที่เข้ารับสินค้า', '📅'],
+    ['plan_return_date', 'แผนนัดส่งกลับ', 'กำหนดวันนำส่งคืนคลัง', '🎯'],
     ['received_date', 'วันที่รับสินค้า', 'Vendor เข้ารับสินค้า', '📥'],
     ['returned_date', 'วันกลับคลัง', 'นำสินค้ากลับคืนคลัง', '🔄'],
     ['completed_date', 'วันปิดงาน', 'สินค้าเข้าคลัง (Doc. WH)', '✅'],
@@ -1016,6 +1054,7 @@ function openSupervisorEdit(o, reload) {
   const fields = [
     ['sold_to_name', 'ร้านค้า'], ['ship_to_name', 'ที่อยู่ส่ง'], ['qty_boxes', 'กล่อง'], ['qty_pieces', 'ชิ้น'],
     ['wh_code', 'WH'], ['reason_text', 'เหตุผล'], ['contact_name', 'ผู้ติดต่อ'], ['contact_phone', 'เบอร์'],
+    ['plan_pickup_date', 'แผนนัดเข้ารับ (yyyy-mm-dd)'], ['plan_return_date', 'แผนนัดส่งกลับ (yyyy-mm-dd)'],
     ['received_date', 'วันที่รับสินค้า (yyyy-mm-dd)'], ['returned_date', 'วันกลับคลัง (yyyy-mm-dd)'], ['completed_date', 'วันปิดงาน (yyyy-mm-dd)'],
     ['gr_remark', 'Remark (คลัง) — ลบออกเมื่อเคลียร์แล้ว'],
   ];
@@ -1518,6 +1557,338 @@ VIEWS.arearules = {
       } catch (e) { out.textContent = 'ผิดพลาด: ' + e.message; }
     };
     loadRules();
+    return w;
+  },
+};
+
+// ---- Supervisor: ตั้งค่า SLA & แผนงาน (แผนนัดเข้ารับ Sales Org & แผนนัดส่งกลับ คืนคลัง) ----
+VIEWS.sla_master = {
+  id: 'sla_master', label: '⏱️ แผน SLA',
+  render: () => {
+    const w = el(`<div class="view wide">
+      <h3>ตั้งค่า SLA & แผนงาน</h3>
+      <p class="hint">จัดการ Master แผนนัดเข้ารับ (คำนวณตาม Sales Org) และ แผนนัดส่งกลับ (Return Goods SLA ตามจังหวัด/เขต/ร้าน)</p>
+
+      <div class="subtabs">
+        <button class="subtab active" id="tab-pickup">📦 แผนนัดเข้ารับ (Sales Org)</button>
+        <button class="subtab" id="tab-return">🏢 แผนนัดส่งกลับ (SLA คืนคลัง)</button>
+      </div>
+
+      <!-- แท็บที่ 1: แผนนัดเข้ารับ (Sales Org) -->
+      <div id="sec-pickup">
+        <div class="card">
+          <h4>เพิ่ม / กำหนดกติกา Sales Org</h4>
+          <p class="hint">Sales Org ที่ระบุจำนวนวัน ระบบจะคำนวณ <b>วันที่มอบหมาย + จำนวนวัน</b> อัตโนมัติ · หากเลือก "Key มือ" ระบบจะเว้นว่างไว้ให้ Vendor/Supervisor กรอกเอง (และเมื่อมีค่าแล้ว Vendor จะแก้ไขไม่ได้)</p>
+          <div class="row" style="flex-wrap:wrap;align-items:center">
+            <input id="p_org" class="in" style="max-width:140px;margin-bottom:0" placeholder="รหัส เช่น 18" />
+            <input id="p_name" class="in" style="flex:2;margin-bottom:0" placeholder="ชื่อ Sales Org เช่น Modern Trade 2" />
+            <input id="p_days" class="in" type="number" min="0" style="max-width:140px;margin-bottom:0" placeholder="จำนวนวัน" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;padding:0 8px">
+              <input type="checkbox" id="p_manual" /> <b>Key มือ</b>
+            </label>
+            <button class="btn primary" id="p_add" style="width:auto">บันทึก Sales Org</button>
+          </div>
+          <div id="p_err" class="err" style="margin-top:6px"></div>
+        </div>
+
+        <div class="card">
+          <h4>ตาราง Master แผนนัดเข้ารับ (Sales Org)</h4>
+          <div class="table-scroll">
+            <table class="otable" id="tbl-pickup">
+              <thead><tr>
+                <th style="width:110px">Sales Org</th>
+                <th>ชื่อ Sales Org</th>
+                <th style="width:160px">ประเภท</th>
+                <th style="width:150px">จำนวนวัน (Day)</th>
+                <th style="width:110px">สถานะ</th>
+                <th style="width:90px"></th>
+              </tr></thead>
+              <tbody><tr><td colspan="6" class="center muted">กำลังโหลด…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- แท็บที่ 2: แผนนัดส่งกลับ (Return SLA) -->
+      <div id="sec-return" class="hidden">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+            <div>
+              <h4 style="margin:0 0 4px">เพิ่มข้อยกเว้นพิเศษ (Exception Rule)</h4>
+              <p class="hint" style="margin:0">ระบบจับคู่จากเจาะจงไปกว้าง: <b>Ship To → Sold To Code → เขต → จังหวัด</b></p>
+            </div>
+            <button class="btn ghost" id="ret_recalc" style="width:auto">⟳ คำนวณแผนวันที่ให้ออเดอร์ที่ค้างใหม่</button>
+          </div>
+          <div id="recalc_out" class="hint"></div>
+          <div class="row" style="flex-wrap:wrap;align-items:center;margin-top:10px">
+            <select id="ret_type" class="in" style="max-width:170px;margin-bottom:0">
+              <option value="ship_to">Ship To (ปลายทาง)</option>
+              <option value="sold_to_code">Sold To Code</option>
+              <option value="zone">เขต (Zone)</option>
+              <option value="province">จังหวัด (Province)</option>
+            </select>
+            <input id="ret_val" class="in" style="flex:2;margin-bottom:0" placeholder="ค่าที่ต้องตรง เช่น 011606 / เขต 1" />
+            <input id="ret_days" class="in" type="number" min="0" style="max-width:140px;margin-bottom:0" placeholder="SLA (วัน) เช่น 6" />
+            <input id="ret_note" class="in" style="flex:1;margin-bottom:0" placeholder="หมายเหตุ เช่น เงื่อนไขพิเศษ" />
+            <button class="btn primary" id="ret_add" style="width:auto">เพิ่มกติกา</button>
+          </div>
+          <div id="ret_err" class="err" style="margin-top:6px"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+            <h4 style="margin:0">ตาราง Master กำหนดส่งกลับคลัง (Return SLA)</h4>
+            <input id="ret_search" class="in" style="max-width:280px;margin:0" placeholder="🔍 ค้นหากติกา / จังหวัด / รหัส..." />
+          </div>
+          <div class="table-scroll">
+            <table class="otable" id="tbl-return">
+              <thead><tr>
+                <th style="width:80px">ระดับ</th>
+                <th style="width:150px">ประเภทเงื่อนไข</th>
+                <th>ค่าที่จับคู่</th>
+                <th style="width:110px">ภูมิภาค</th>
+                <th style="width:130px">SLA (วัน)</th>
+                <th>หมายเหตุ</th>
+                <th style="width:100px">สถานะ</th>
+                <th style="width:80px"></th>
+              </tr></thead>
+              <tbody><tr><td colspan="8" class="center muted">กำลังโหลด…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>`);
+
+    // Tab switching
+    const tabPickup = $('#tab-pickup', w);
+    const tabReturn = $('#tab-return', w);
+    const secPickup = $('#sec-pickup', w);
+    const secReturn = $('#sec-return', w);
+
+    tabPickup.onclick = () => {
+      tabPickup.classList.add('active'); tabReturn.classList.remove('active');
+      secPickup.classList.remove('hidden'); secReturn.classList.add('hidden');
+    };
+    tabReturn.onclick = () => {
+      tabReturn.classList.add('active'); tabPickup.classList.remove('active');
+      secReturn.classList.remove('hidden'); secPickup.classList.add('hidden');
+      if (!returnRulesLoaded) loadReturnList();
+    };
+
+    // ---- Subtab 1: Pickup Rules ----
+    const manualChk = $('#p_manual', w);
+    const daysInput = $('#p_days', w);
+    manualChk.onchange = () => {
+      daysInput.disabled = manualChk.checked;
+      if (manualChk.checked) daysInput.value = '';
+    };
+
+    let pickupRules = [];
+    async function loadPickupList() {
+      const tb = $('#tbl-pickup tbody', w);
+      tb.innerHTML = '<tr><td colspan="6" class="center muted">กำลังโหลด…</td></tr>';
+      try {
+        pickupRules = await api('/admin/sla-pickup');
+        if (!pickupRules || !pickupRules.length) {
+          tb.innerHTML = '<tr><td colspan="6" class="center muted">ยังไม่มีกติกา</td></tr>';
+          return;
+        }
+        tb.innerHTML = '';
+        pickupRules.forEach((r) => {
+          const tr = el(`<tr>
+            <td><b>${esc(r.sales_org)}</b></td>
+            <td>${esc(r.sales_org_name || '-')}</td>
+            <td>${r.is_manual ? '<span class="sla-badge manual">Key มือ</span>' : '<span class="sla-badge auto">คำนวณอัตโนมัติ</span>'}</td>
+            <td><b>${r.is_manual ? '-' : `${r.days ?? 1} วัน`}</b></td>
+            <td><button class="chip btn-chip" data-act="toggle">${r.enabled !== false ? '✅ เปิด' : '⬜ ปิด'}</button></td>
+            <td>
+              <button class="chip btn-chip" data-act="edit">✏️</button>
+              <button class="chip btn-chip r" data-act="del">🗑</button>
+            </td></tr>`);
+          tr.querySelector('[data-act=toggle]').onclick = async () => {
+            await api('/admin/sla-pickup/' + r.id, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: r.enabled === false }),
+            });
+            loadPickupList();
+          };
+          tr.querySelector('[data-act=edit]').onclick = () => {
+            openModal(`<div class="d-no">แก้ไข Sales Org ${esc(r.sales_org)}</div>
+              <label class="hint">ชื่อ Sales Org</label><input id="ep_name" class="in" value="${esc(r.sales_org_name || '')}"/>
+              <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;margin:8px 0">
+                <input type="checkbox" id="ep_manual" ${r.is_manual ? 'checked' : ''}/> <b>Key มือ</b>
+              </label>
+              <label class="hint">จำนวนวัน (Day)</label>
+              <input id="ep_days" type="number" min="0" class="in" value="${r.days ?? ''}" ${r.is_manual ? 'disabled' : ''}/>
+              <button class="btn primary" id="ep_save">บันทึก</button>
+              <div id="m-err" class="err"></div>`);
+            const epManual = $('#ep_manual');
+            const epDays = $('#ep_days');
+            epManual.onchange = () => {
+              epDays.disabled = epManual.checked;
+              if (epManual.checked) epDays.value = '';
+            };
+            $('#ep_save').onclick = async () => {
+              const name = $('#ep_name').value.trim();
+              const isMan = epManual.checked;
+              const d = epDays.value.trim();
+              if (!name) { $('#m-err').textContent = 'กรุณากรอกชื่อ'; return; }
+              try {
+                await api('/admin/sla-pickup/' + r.id, {
+                  method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ sales_org_name: name, is_manual: isMan, days: isMan ? null : Number(d) || 0 }),
+                });
+                closeModal(); toast('แก้ไขสำเร็จ'); loadPickupList();
+              } catch (e) { $('#m-err').textContent = e.message; }
+            };
+          };
+          tr.querySelector('[data-act=del]').onclick = async () => {
+            if (!confirm(`ยืนยันลบกติกา Sales Org ${r.sales_org}?`)) return;
+            await api('/admin/sla-pickup/' + r.id, { method: 'DELETE' });
+            toast('ลบสำเร็จ'); loadPickupList();
+          };
+          tb.appendChild(tr);
+        });
+      } catch (e) {
+        tb.innerHTML = `<tr><td colspan="6" class="center err">โหลดไม่สำเร็จ: ${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    $('#p_add', w).onclick = async () => {
+      const org = $('#p_org', w).value.trim();
+      const name = $('#p_name', w).value.trim();
+      const isMan = manualChk.checked;
+      const d = daysInput.value.trim();
+      const errBox = $('#p_err', w); errBox.textContent = '';
+      if (!org || !name) { errBox.textContent = 'กรุณากรอกรหัสและชื่อ Sales Org'; return; }
+      if (!isMan && !d) { errBox.textContent = 'กรุณาระบุจำนวนวัน หรือติ๊ก Key มือ'; return; }
+      try {
+        await api('/admin/sla-pickup', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sales_org: org, sales_org_name: name, is_manual: isMan, days: isMan ? null : Number(d) || 0 }),
+        });
+        $('#p_org', w).value = ''; $('#p_name', w).value = ''; daysInput.value = ''; manualChk.checked = false;
+        daysInput.disabled = false;
+        toast('เพิ่ม Sales Org สำเร็จ'); loadPickupList();
+      } catch (e) { errBox.textContent = e.message; }
+    };
+
+    // ---- Subtab 2: Return Rules ----
+    let returnRules = [];
+    let returnRulesLoaded = false;
+    const typeLabel = { ship_to: 'Ship To (ปลายทาง)', sold_to_code: 'Sold To Code', zone: 'เขต (Zone)', province: 'จังหวัด (Province)' };
+
+    async function loadReturnList() {
+      const tb = $('#tbl-return tbody', w);
+      tb.innerHTML = '<tr><td colspan="8" class="center muted">กำลังโหลด…</td></tr>';
+      try {
+        returnRules = await api('/admin/sla-return');
+        returnRulesLoaded = true;
+        renderReturnTable();
+      } catch (e) {
+        tb.innerHTML = `<tr><td colspan="8" class="center err">โหลดไม่สำเร็จ: ${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    function renderReturnTable() {
+      const tb = $('#tbl-return tbody', w);
+      const search = ($('#ret_search', w)?.value || '').trim().toLowerCase();
+      const filtered = returnRules.filter((r) => {
+        if (!search) return true;
+        return String(r.match_value || '').toLowerCase().includes(search)
+          || String(r.region || '').toLowerCase().includes(search)
+          || String(r.note || '').toLowerCase().includes(search)
+          || String(typeLabel[r.rule_type] || '').toLowerCase().includes(search);
+      });
+      if (!filtered.length) {
+        tb.innerHTML = '<tr><td colspan="8" class="center muted">ไม่พบกติกาตามเงื่อนไข</td></tr>';
+        return;
+      }
+      tb.innerHTML = '';
+      filtered.forEach((r) => {
+        const isException = ['ship_to', 'sold_to_code', 'zone'].includes(r.rule_type) || r.priority < 4;
+        const tr = el(`<tr>
+          <td><span class="chip ${isException ? 'r' : ''}">P${r.priority ?? 4}</span></td>
+          <td><b>${esc(typeLabel[r.rule_type] || r.rule_type)}</b></td>
+          <td>${esc(r.match_value)}</td>
+          <td>${esc(r.region || '-')}</td>
+          <td><b>${r.days} วัน</b></td>
+          <td><span class="muted">${esc(r.note || '-')}</span></td>
+          <td><button class="chip btn-chip" data-act="toggle">${r.enabled !== false ? '✅ เปิด' : '⬜ ปิด'}</button></td>
+          <td>
+            <button class="chip btn-chip" data-act="edit">✏️</button>
+            ${isException ? '<button class="chip btn-chip r" data-act="del">🗑</button>' : ''}
+          </td></tr>`);
+        tr.querySelector('[data-act=toggle]').onclick = async () => {
+          await api('/admin/sla-return/' + r.id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: r.enabled === false }),
+          });
+          loadReturnList();
+        };
+        tr.querySelector('[data-act=edit]').onclick = () => {
+          openModal(`<div class="d-no">แก้ไข SLA — ${esc(r.match_value)}</div>
+            <label class="hint">จำนวนวัน SLA (วัน)</label>
+            <input id="er_days" type="number" min="0" class="in" value="${r.days}"/>
+            <label class="hint">หมายเหตุ</label>
+            <input id="er_note" class="in" value="${esc(r.note || '')}"/>
+            <button class="btn primary" id="er_save">บันทึก</button>
+            <div id="m-err" class="err"></div>`);
+          $('#er_save').onclick = async () => {
+            const d = $('#er_days').value.trim();
+            const nt = $('#er_note').value.trim();
+            if (!d) { $('#m-err').textContent = 'กรุณาระบุจำนวนวัน'; return; }
+            try {
+              await api('/admin/sla-return/' + r.id, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ days: Number(d), note: nt || null }),
+              });
+              closeModal(); toast('แก้ไขสำเร็จ'); loadReturnList();
+            } catch (e) { $('#m-err').textContent = e.message; }
+          };
+        };
+        const delBtn = tr.querySelector('[data-act=del]');
+        if (delBtn) {
+          delBtn.onclick = async () => {
+            if (!confirm(`ยืนยันลบกติกาพิเศษ ${r.match_value}?`)) return;
+            await api('/admin/sla-return/' + r.id, { method: 'DELETE' });
+            toast('ลบสำเร็จ'); loadReturnList();
+          };
+        }
+        tb.appendChild(tr);
+      });
+    }
+
+    $('#ret_search', w).oninput = renderReturnTable;
+
+    $('#ret_add', w).onclick = async () => {
+      const type = $('#ret_type', w).value;
+      const val = $('#ret_val', w).value.trim();
+      const days = $('#ret_days', w).value.trim();
+      const note = $('#ret_note', w).value.trim();
+      const errBox = $('#ret_err', w); errBox.textContent = '';
+      if (!val || !days) { errBox.textContent = 'กรุณากรอกค่าที่ต้องตรง และจำนวนวัน SLA'; return; }
+      try {
+        await api('/admin/sla-return', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rule_type: type, match_value: val, days: Number(days), note }),
+        });
+        $('#ret_val', w).value = ''; $('#ret_days', w).value = ''; $('#ret_note', w).value = '';
+        toast('เพิ่มกติกาพิเศษสำเร็จ'); loadReturnList();
+      } catch (e) { errBox.textContent = e.message; }
+    };
+
+    $('#ret_recalc', w).onclick = async () => {
+      const out = $('#recalc_out', w);
+      out.textContent = 'กำลังคำนวณแผนวันที่…';
+      try {
+        const res = await api('/admin/sla/recalculate', { method: 'POST' });
+        out.textContent = `คำนวณเสร็จสิ้น · อัปเดต ${res.updated} รายการ จากทั้งหมด ${res.total} รายการ`;
+        toast(`คำนวณสำเร็จ ${res.updated} รายการ`);
+      } catch (e) { out.textContent = 'ผิดพลาด: ' + e.message; }
+    };
+
+    loadPickupList();
     return w;
   },
 };
@@ -2185,6 +2556,8 @@ function orderDetailHtml(o) {
     <div class="kv"><span>จำนวน</span><span>${o.qty_boxes ?? 0} กล่อง · ${o.qty_pieces ?? 0} ชิ้น</span></div>
     ${o.gr_remark ? `<div class="kv"><span>Remark (คลัง)</span><span class="gr-remark">${esc(o.gr_remark)}</span></div>` : ''}
     <div class="kv"><span>วันที่มอบหมาย</span><span>${o.assigned_at ? fmtDate(o.assigned_at) : '-'}</span></div>
+    <div class="kv"><span>แผนนัดเข้ารับ</span><span>${o.plan_pickup_date ? fmtDate(o.plan_pickup_date) : '-'}</span></div>
+    <div class="kv"><span>แผนนัดส่งกลับ</span><span>${o.plan_return_date ? fmtDate(o.plan_return_date) : '-'}</span></div>
     <div class="kv"><span>วันที่รับสินค้า</span><span>${o.received_date ? fmtDate(o.received_date) : '-'}</span></div>
     <div class="kv"><span>วันกลับคลัง</span><span>${o.returned_date ? fmtDate(o.returned_date) : '-'}</span></div>
     <div class="kv"><span>วันที่ WH RCV</span><span>${o.gr_received_date ? fmtDate(o.gr_received_date) : '-'}</span></div>

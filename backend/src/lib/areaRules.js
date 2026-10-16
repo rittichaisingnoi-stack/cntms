@@ -40,8 +40,15 @@ export async function autoAssignPending({ rgNos = null, actionBy = null } = {}) 
   let rules = [];
   try { rules = await loadRules(); } catch { /* ตาราง rules ยังไม่มี */ }
 
+  let pickupRules = [], returnRules = [];
+  try {
+    const { loadPickupRules, loadReturnRules } = await import('./slaRules.js');
+    pickupRules = await loadPickupRules();
+    returnRules = await loadReturnRules();
+  } catch { /* fallback */ }
+
   // เลือกคอลัมน์ + region (ถ้ายังไม่ได้รัน region.sql ให้ถอย select แบบไม่มี region)
-  const baseCols = 'rg_no, ship_to_code, sold_to, sold_to_code, zone, sold_to_name, ship_to_name';
+  const baseCols = 'rg_no, ship_to_code, sold_to, sold_to_code, zone, sold_to_name, ship_to_name, sales_org, province, rg_date';
   const run = (cols) => {
     let q = supabase.from('rg_headers').select(cols).eq('status', 'pending');
     if (rgNos) q = q.in('rg_no', rgNos);
@@ -74,15 +81,33 @@ export async function autoAssignPending({ rgNos = null, actionBy = null } = {}) 
       }
       continue;
     }
+    const assignedAt = new Date().toISOString();
+    let planPickup = null, planReturn = null;
+    try {
+      const { computeOrderPlanDates } = await import('./slaRules.js');
+      const dates = computeOrderPlanDates({ ...h, assigned_at: assignedAt }, pickupRules, returnRules);
+      planPickup = dates.plan_pickup_date;
+      planReturn = dates.plan_return_date;
+    } catch {}
+
     const patch = {
       vendor_id: rule.vendor_id, area: rule.area || null,
-      status: 'assigned_vendor', assigned_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      status: 'assigned_vendor', assigned_at: assignedAt,
+      updated_at: assignedAt,
+      ...(planPickup ? { plan_pickup_date: planPickup } : {}),
+      ...(planReturn ? { plan_return_date: planReturn } : {}),
     };
     if (actionBy != null) patch.admin_id = actionBy; // ผู้ที่ทำให้เกิดการมอบหมาย (ผู้ Upload/กด Re-assign)
-    const { error: ue } = await supabase.from('rg_headers')
+    let { error: ue } = await supabase.from('rg_headers')
       .update(patch)
       .eq('rg_no', h.rg_no).eq('status', 'pending');
+    if (ue && ue.code === '42703') {
+      delete patch.plan_pickup_date;
+      delete patch.plan_return_date;
+      ({ error: ue } = await supabase.from('rg_headers')
+        .update(patch)
+        .eq('rg_no', h.rg_no).eq('status', 'pending'));
+    }
     if (ue) { waiting++; continue; }
     assigned++;
     await supabase.from('order_tracking').insert({

@@ -416,4 +416,137 @@ router.delete('/archive', async (_req, res) => {
   }
 });
 
+// ---- SLA Master (แผนนัดเข้ารับ Sales Org & แผนนัดส่งกลับ คืนคลัง) ----
+import {
+  loadPickupRules, loadReturnRules, computeOrderPlanDates
+} from '../lib/slaRules.js';
+
+// GET /api/admin/sla-pickup — อ่านรายการ Sales Org SLA
+router.get('/sla-pickup', async (_req, res) => {
+  try {
+    const rules = await loadPickupRules();
+    res.json(rules);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/admin/sla-pickup — เพิ่ม Sales Org
+router.post('/sla-pickup', async (req, res) => {
+  const { sales_org, sales_org_name, days, is_manual } = req.body || {};
+  if (!sales_org || !sales_org_name) return res.status(400).json({ error: 'ต้องระบุ Sales Org และชื่อ' });
+  const row = {
+    sales_org: String(sales_org).trim(),
+    sales_org_name: String(sales_org_name).trim(),
+    days: is_manual ? null : (days != null && days !== '' ? Number(days) : null),
+    is_manual: Boolean(is_manual),
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from('sla_pickup_rules').insert(row).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// PUT /api/admin/sla-pickup/:id — แก้ไข Sales Org
+router.put('/sla-pickup/:id', async (req, res) => {
+  const patch = {};
+  for (const k of ['sales_org_name', 'days', 'is_manual', 'enabled']) {
+    if (k in (req.body || {})) patch[k] = req.body[k];
+  }
+  if (patch.is_manual) patch.days = null;
+  else if (patch.days !== undefined && patch.days !== null) patch.days = Number(patch.days);
+  patch.updated_at = new Date().toISOString();
+  const { error } = await supabase.from('sla_pickup_rules').update(patch).eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// DELETE /api/admin/sla-pickup/:id — ลบ Sales Org
+router.delete('/sla-pickup/:id', async (req, res) => {
+  const { error } = await supabase.from('sla_pickup_rules').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// GET /api/admin/sla-return — อ่านรายการ Return SLA (เจาะจง → กว้าง)
+router.get('/sla-return', async (_req, res) => {
+  try {
+    const rules = await loadReturnRules();
+    res.json(rules);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/admin/sla-return — เพิ่มกติกา Return SLA
+router.post('/sla-return', async (req, res) => {
+  const { rule_type, match_value, days, note, region } = req.body || {};
+  if (!rule_type || !match_value || days == null) return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบ' });
+  const priorityMap = { ship_to: 1, sold_to_code: 2, zone: 3, province: 4 };
+  const row = {
+    rule_type: String(rule_type).trim(),
+    match_value: String(match_value).trim(),
+    days: Number(days),
+    priority: priorityMap[rule_type] || 4,
+    note: note || null,
+    region: region || null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from('sla_return_rules').insert(row).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// PUT /api/admin/sla-return/:id — แก้ไข Return SLA
+router.put('/sla-return/:id', async (req, res) => {
+  const patch = {};
+  for (const k of ['days', 'match_value', 'rule_type', 'note', 'enabled', 'region']) {
+    if (k in (req.body || {})) patch[k] = req.body[k];
+  }
+  if (patch.days != null) patch.days = Number(patch.days);
+  if (patch.rule_type) {
+    const priorityMap = { ship_to: 1, sold_to_code: 2, zone: 3, province: 4 };
+    patch.priority = priorityMap[patch.rule_type] || 4;
+  }
+  patch.updated_at = new Date().toISOString();
+  const { error } = await supabase.from('sla_return_rules').update(patch).eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// DELETE /api/admin/sla-return/:id — ลบกติกา Return SLA
+router.delete('/sla-return/:id', async (req, res) => {
+  const { error } = await supabase.from('sla_return_rules').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// POST /api/admin/sla/recalculate — คำนวณแผนเข้ารับและแผนส่งกลับให้ออเดอร์ที่ยังไม่ปิดงาน
+router.post('/sla/recalculate', async (_req, res) => {
+  try {
+    const pickupRules = await loadPickupRules();
+    const returnRules = await loadReturnRules();
+    const { data: orders, error } = await supabase
+      .from('rg_headers')
+      .select('rg_no, sales_org, assigned_at, rg_date, sold_to, sold_to_code, zone, province, plan_pickup_date, plan_return_date, status')
+      .neq('status', 'completed')
+      .limit(1000);
+    if (error) return res.status(500).json({ error: error.message });
+    let updated = 0;
+    for (const o of orders || []) {
+      const dates = computeOrderPlanDates(o, pickupRules, returnRules, { forceRecalc: false });
+      const patch = {};
+      if (dates.plan_pickup_date && dates.plan_pickup_date !== o.plan_pickup_date) patch.plan_pickup_date = dates.plan_pickup_date;
+      if (dates.plan_return_date && dates.plan_return_date !== o.plan_return_date) patch.plan_return_date = dates.plan_return_date;
+      if (Object.keys(patch).length > 0) {
+        const { error: ue } = await supabase.from('rg_headers').update(patch).eq('rg_no', o.rg_no);
+        if (!ue) updated++;
+      }
+    }
+    res.json({ ok: true, updated, total: orders?.length || 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;

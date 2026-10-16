@@ -131,6 +131,8 @@ router.get('/export', async (req, res) => {
     'เหตุผล': r.reason_text,
     'วันที่พิมพ์': r.rg_date ? fmtD(r.rg_date) : '',   // ไม่มีเวลาในต้นทาง (มาจากรายงาน RG)
     'วันที่มอบหมาย': fmtTS(r.assigned_at),   // timestamptz — มีเวลาจริงอยู่แล้ว
+    'แผนนัดเข้ารับ': r.plan_pickup_date ? fmtD(r.plan_pickup_date) : '',
+    'แผนนัดส่งกลับ': r.plan_return_date ? fmtD(r.plan_return_date) : '',
     'User Assign': nameOf(r.admin_id),
     'วันที่รับ': dateTime(r.received_date, r.rg_no, 'received'),
     'User RCV': actor(r.rg_no, 'received'),

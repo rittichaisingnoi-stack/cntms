@@ -283,45 +283,76 @@ function dateOrderError(order, { received_date, returned_date }) {
   return null;
 }
 
-// PUT /api/orders/:rgNo/vendor-dates  (vendor) — { received_date?, returned_date? }
+// PUT /api/orders/:rgNo/vendor-dates  (vendor) — { received_date?, returned_date?, plan_pickup_date? }
 router.put('/:rgNo/vendor-dates', requireRole('vendor'), async (req, res) => {
   const order = await loadOrder(req.params.rgNo);
   if (!order) return res.status(404).json({ error: 'ไม่พบ Order' });
   if (req.user.role === 'vendor' && order.vendor_id !== req.user.id) return res.status(403).json({ error: 'ไม่ใช่งานของคุณ' });
   if (order.status === 'completed') return res.status(400).json({ error: 'งานปิดแล้ว แก้วันที่ไม่ได้' });
 
-  const { received_date, returned_date } = req.body || {};
-  if (!received_date && !returned_date) return res.status(400).json({ error: 'กรุณากรอกวันที่' });
+  const { received_date, returned_date, plan_pickup_date } = req.body || {};
+  if (!received_date && !returned_date && !plan_pickup_date) return res.status(400).json({ error: 'กรุณากรอกวันที่' });
+
+  // สิทธิ์: ถ้ามีแผนนัดเข้ารับอยู่แล้ว Vendor จะแก้ไขไม่ได้
+  if (plan_pickup_date && order.plan_pickup_date && order.plan_pickup_date !== plan_pickup_date) {
+    return res.status(400).json({ error: 'แผนนัดเข้ารับ มีการกำหนดไว้แล้ว ไม่สามารถแก้ไขได้' });
+  }
+
   const derr = dateOrderError(order, { received_date, returned_date });
   if (derr) return res.status(400).json({ error: derr });
   const patch = { updated_at: now() };
   if (received_date) patch.received_date = received_date;
   if (returned_date) patch.returned_date = returned_date;
+  if (plan_pickup_date && !order.plan_pickup_date) {
+    patch.plan_pickup_date = plan_pickup_date;
+    try {
+      const { loadReturnRules, resolveReturnRule, addDaysToDate } = await import('../lib/slaRules.js');
+      const retRules = await loadReturnRules();
+      const rRule = resolveReturnRule(order, retRules);
+      if (rRule && rRule.days != null && !order.plan_return_date) {
+        patch.plan_return_date = addDaysToDate(plan_pickup_date, rRule.days);
+      }
+    } catch {}
+  }
   patch.status = vendorStatus(order, patch);
 
-  const { error } = await supabase.from('rg_headers').update(patch)
+  let { error } = await supabase.from('rg_headers').update(patch)
     .eq('rg_no', req.params.rgNo).neq('status', 'completed');
+  if (error && error.code === '42703') {
+    delete patch.plan_pickup_date;
+    delete patch.plan_return_date;
+    ({ error } = await supabase.from('rg_headers').update(patch)
+      .eq('rg_no', req.params.rgNo).neq('status', 'completed'));
+  }
   if (error) return res.status(500).json({ error: error.message });
   await trackDates(req.params.rgNo, req.user.id, order, { received_date, returned_date },
-    [received_date && `รับ ${received_date}`, returned_date && `กลับคลัง ${returned_date}`].filter(Boolean).join(' · '));
+    [plan_pickup_date && `แผนเข้ารับ ${plan_pickup_date}`, received_date && `รับ ${received_date}`, returned_date && `กลับคลัง ${returned_date}`].filter(Boolean).join(' · '));
   // วันที่ครบแล้ว + มีวันปิดงานค้างจากไฟล์ GR → ปิดให้อัตโนมัติ ไม่ต้อง upload ซ้ำ
   const auto = await applyPendingCompletion(req.params.rgNo);
   res.json({ ok: true, auto_completed: auto });
 });
 
-// PUT /api/orders/bulk-vendor-dates  (vendor) — { rg_nos, received_date?, returned_date? }
+// PUT /api/orders/bulk-vendor-dates  (vendor) — { rg_nos, received_date?, returned_date?, plan_pickup_date? }
 router.put('/bulk-vendor-dates', requireRole('vendor'), async (req, res) => {
-  const { rg_nos, received_date, returned_date } = req.body || {};
+  const { rg_nos, received_date, returned_date, plan_pickup_date } = req.body || {};
   if (!Array.isArray(rg_nos) || !rg_nos.length) return res.status(400).json({ error: 'กรุณาเลือกออเดอร์' });
-  if (!received_date && !returned_date) return res.status(400).json({ error: 'กรุณากรอกวันที่' });
+  if (!received_date && !returned_date && !plan_pickup_date) return res.status(400).json({ error: 'กรุณากรอกวันที่' });
 
-  let sel = supabase.from('rg_headers').select('rg_no, status, assigned_at, received_date, returned_date').in('rg_no', rg_nos);
+  let sel = supabase.from('rg_headers').select('rg_no, status, assigned_at, received_date, returned_date, plan_pickup_date, plan_return_date, sold_to, sold_to_code, zone, province').in('rg_no', rg_nos);
   if (req.user.role === 'vendor') sel = sel.eq('vendor_id', req.user.id);
   const { data: targets, error: se } = await sel;
   if (se) return res.status(500).json({ error: se.message });
   const list = (targets || []).filter((t) => t.status !== 'completed');
   const locked = (targets || []).length - list.length;
   if (!list.length) return res.status(400).json({ error: locked ? 'งานที่เลือกปิดแล้ว แก้วันที่ไม่ได้' : 'ไม่พบออเดอร์ของคุณตามที่เลือก' });
+
+  let retRules = [];
+  if (plan_pickup_date) {
+    try {
+      const { loadReturnRules } = await import('../lib/slaRules.js');
+      retRules = await loadReturnRules();
+    } catch {}
+  }
 
   let updated = 0, autoClosed = 0;
   const badDates = []; // RG ที่วันที่ผิดลำดับ — ข้ามแล้วแจ้งกลับ
@@ -331,9 +362,26 @@ router.put('/bulk-vendor-dates', requireRole('vendor'), async (req, res) => {
     const patch = { updated_at: now() };
     if (received_date) patch.received_date = received_date;
     if (returned_date) patch.returned_date = returned_date;
+    // ถ้าคีย์แผนนัดเข้ารับ และออเดอร์นี้ยังไม่มี ให้ตั้งค่า
+    if (plan_pickup_date && !t.plan_pickup_date) {
+      patch.plan_pickup_date = plan_pickup_date;
+      try {
+        const { resolveReturnRule, addDaysToDate } = await import('../lib/slaRules.js');
+        const rRule = resolveReturnRule(t, retRules);
+        if (rRule && rRule.days != null && !t.plan_return_date) {
+          patch.plan_return_date = addDaysToDate(plan_pickup_date, rRule.days);
+        }
+      } catch {}
+    }
     patch.status = vendorStatus(t, patch);
-    const { error } = await supabase.from('rg_headers').update(patch)
+    let { error } = await supabase.from('rg_headers').update(patch)
       .eq('rg_no', t.rg_no).neq('status', 'completed');
+    if (error && error.code === '42703') {
+      delete patch.plan_pickup_date;
+      delete patch.plan_return_date;
+      ({ error } = await supabase.from('rg_headers').update(patch)
+        .eq('rg_no', t.rg_no).neq('status', 'completed'));
+    }
     if (!error) {
       updated++;
       await trackDates(t.rg_no, req.user.id, t, { received_date, returned_date }, 'bulk');
@@ -897,6 +945,7 @@ router.put('/:rgNo', requireRole('supervisor'), async (req, res) => {
     'rg_date', 'sales_org', 'contact_name', 'contact_phone', 'sales_person',
     'province', 'district', 'region', 'area', 'status', 'vendor_id',
     'received_date', 'returned_date', 'completed_date', 'gr_received_date', 'gr_remark',
+    'plan_pickup_date', 'plan_return_date',
   ];
   const patch = { updated_at: now() };
   for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
@@ -914,7 +963,12 @@ router.put('/:rgNo', requireRole('supervisor'), async (req, res) => {
     }
   }
 
-  const { error } = await supabase.from('rg_headers').update(patch).eq('rg_no', req.params.rgNo);
+  let { error } = await supabase.from('rg_headers').update(patch).eq('rg_no', req.params.rgNo);
+  if (error && error.code === '42703') {
+    delete patch.plan_pickup_date;
+    delete patch.plan_return_date;
+    ({ error } = await supabase.from('rg_headers').update(patch).eq('rg_no', req.params.rgNo));
+  }
   if (error) return res.status(500).json({ error: error.message });
   await track(req.params.rgNo, 'edited', req.user.id);
   res.json({ ok: true });

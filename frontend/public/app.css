@@ -49,6 +49,8 @@ body{margin:0;font-family:Tahoma,"Segoe UI",sans-serif;background:var(--bg);colo
 .rg .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .chip{background:#eef1f7;border-radius:20px;padding:3px 10px;font-size:12px;color:#334}
 .chip.r{background:#fde7ec;color:var(--red)}
+.chip.w{background:#fdf1dc;color:#b5730a}
+.chip.g{background:#e6f6ec;color:#1f8f4d}
 .pager{display:flex;justify-content:center;gap:10px;margin:16px 0}
 .pager button{padding:8px 16px;border:1px solid var(--line);background:#fff;border-radius:8px}
 .empty{text-align:center;color:var(--muted);padding:40px 0}
@@ -424,4 +426,14 @@ small{color:var(--muted);font-weight:400}
 .ann-modal-body{background:#f8fafd;border:1px solid var(--line);border-radius:10px;padding:16px;font-size:15px;line-height:1.65;white-space:pre-wrap;word-break:break-word;color:var(--txt);max-height:55vh;overflow-y:auto}
 .ann-modal-footer{margin-top:18px;display:flex;justify-content:flex-end}
 .ann-modal-footer .btn{width:100%}
+
+/* ---- SLA Master subtabs & styling ---- */
+.subtabs{display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:10px}
+.subtab{background:#fff;border:1px solid var(--line);border-radius:8px;padding:9px 18px;font-weight:700;font-size:14px;color:var(--muted);cursor:pointer;transition:all .2s ease}
+.subtab:hover{border-color:var(--blue);color:var(--blue)}
+.subtab.active{background:var(--blue);color:#fff;border-color:var(--blue);box-shadow:0 2px 6px rgba(11,61,145,.2)}
+.sla-badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:12px;font-weight:700}
+.sla-badge.manual{background:#fdf1dc;color:#b5730a}
+.sla-badge.auto{background:#e7effe;color:#0b3d91}
+
 
