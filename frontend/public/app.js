@@ -892,15 +892,27 @@ VIEWS.orders = {
     wide: true,
     params: () => ({ status: $('#fstatus')?.value || '', area: $('#farea')?.value.trim() || '', q: $('#fq')?.value.trim() || '' }),
     filters: (reload) => {
-      const f = el(`<div class="jfilters">
-        <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
-          <input id="fq" class="in" placeholder="เช่น 116069, บางปะกง — RG/เขต/Sold To Code/Ship To/ร้านค้า/อำเภอ/จังหวัด/Region/WH/เหตุผล"/></label>
-        <label class="jf"><span>สถานะ</span>
-          <select id="fstatus" class="in"><option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-        <label class="jf"><span>พื้นที่</span>
-          <input id="farea" class="in" placeholder="เช่น กรุงเทพ"/></label>
-        <button class="btn primary jf-btn" id="fsearch">ค้นหา</button>
-        <button class="btn ghost jf-btn" id="fexport">⬇️ Export Excel</button></div>`);
+      const f = el(`<div>
+        <div class="jfilters">
+          <label class="jf jf-search"><span>ค้นหา (เว้นวรรค=ต้องมีทุกคำ · ,=อย่างใดอย่างหนึ่ง)</span>
+            <input id="fq" class="in" placeholder="เช่น 116069, บางปะกง — RG/เขต/Sold To Code/Ship To/ร้านค้า/อำเภอ/จังหวัด/Region/WH/เหตุผล"/></label>
+          <label class="jf"><span>สถานะ</span>
+            <select id="fstatus" class="in"><option value="">ทุกสถานะ</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+          <label class="jf"><span>พื้นที่</span>
+            <input id="farea" class="in" placeholder="เช่น กรุงเทพ"/></label>
+          <button class="btn primary jf-btn" id="fsearch">ค้นหา</button>
+          <button class="btn ghost jf-btn" id="fexport">⬇️ Export รายงาน</button>
+        </div>
+        <div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--c-border)">
+          <a class="btn ghost" id="fload" style="width:auto">⬇️ Load Data Excel (แผนเข้ารับ)</a>
+          <input id="ffile" type="file" accept=".xlsx,.xls" class="in" style="flex:1"/>
+          <button class="btn primary" id="fupload" style="width:auto">⬆️ Upload แผนนัดเข้ารับ</button>
+        </div>
+        <p class="hint" style="margin:4px 0 0 0">
+          Load Data Excel จะดึงตามตัวกรองด้านบน (สถานะ/พื้นที่/ค้นหา) · กรอก/แก้ไขคอลัมน์ <b>แผนนัดเข้ารับ (dd/mm/yyyy)</b> แล้วอัปโหลดกลับเพื่อบันทึก (ระบบจะคำนวณแผนส่งกลับให้อัตโนมัติ)
+        </p>
+        <div id="fmsg"></div>
+      </div>`);
       $('#fsearch', f).onclick = reload;
       $('#fstatus', f).onchange = reload;
       let t;
@@ -913,6 +925,40 @@ VIEWS.orders = {
         if (st) p.set('status', st); if (ar) p.set('area', ar); if (qq) p.set('q', qq);
         window.open(withToken('/api/dashboard/export?' + p.toString()), '_blank');
       };
+
+      // ⬇️ Load Data Excel สำหรับแก้/เพิ่มแผนนัดเข้ารับ (เคารพ filter สถานะ/พื้นที่/ค้นหา)
+      $('#fload', f).setAttribute('download', '');
+      const syncLoadHref = () => {
+        const p = new URLSearchParams();
+        const st = $('#fstatus', f).value, ar = $('#farea', f).value.trim(), qq = $('#fq', f).value.trim();
+        if (st) p.set('status', st); if (ar) p.set('area', ar); if (qq) p.set('q', qq);
+        const qs = p.toString();
+        $('#fload', f).href = withToken('/api/orders/vendor-template' + (qs ? '?' + qs : ''));
+      };
+      syncLoadHref();
+      $('#fload', f).addEventListener('mousedown', syncLoadHref);
+
+      // ⬆️ Upload แผนนัดเข้ารับ
+      $('#fupload', f).onclick = async () => {
+        const file = $('#ffile', f).files[0], out = $('#fmsg', f);
+        if (!file) { out.innerHTML = '<p class="err">กรุณาเลือกไฟล์ (ใช้ไฟล์จากปุ่ม Load Data Excel แล้วกรอก/แก้ไขแผนนัดเข้ารับ)</p>'; return; }
+        out.innerHTML = 'กำลังอัปโหลด…';
+        const fd = new FormData(); fd.append('file', file);
+        try {
+          const r = await api('/orders/vendor-import', { method: 'POST', body: fd });
+          const badDates = r.bad_dates || [];
+          out.innerHTML = `<p class="ok">บันทึกแผนนัดเข้ารับ/วันที่ ${r.updated} รายการ`
+            + (r.plan_pickup_updated ? ` (อัปเดตแผนเข้ารับ ${r.plan_pickup_updated})` : '')
+            + (r.notes_updated ? ` · หมวด+เหตุผล ${r.notes_updated} ออเดอร์` : '')
+            + (r.locked ? ` · <span class="err">ปิดงานแล้วแก้ไม่ได้ ${r.locked}</span>` : '')
+            + (r.bad_rows ? ` · <span class="err">ข้ามแถวไม่ครบ ${r.bad_rows}</span>` : '')
+            + (badDates.length ? ` · <span class="err">ข้ามวันที่ผิดลำดับ ${badDates.length}</span>` : '') + '</p>'
+            + (badDates.length ? `<ul class="err" style="margin:6px 0 0 18px">${badDates.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>` : '');
+          $('#ffile', f).value = '';
+          reload();
+        } catch (e) { out.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+      };
+
       return f;
     },
     renderRows: (data, reload) => {

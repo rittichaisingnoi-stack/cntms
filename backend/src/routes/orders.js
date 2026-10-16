@@ -440,13 +440,14 @@ router.put('/bulk-vendor-notes', requireRole('vendor'), async (req, res) => {
   res.json({ updated, saved, not_mine: notMine });
 });
 
-// GET /api/orders/vendor-template  (vendor) — ไฟล์เดียว: วันที่รับ/กลับคลัง + หมวด/เหตุผล
+// GET /api/orders/vendor-template  (vendor, supervisor, admin) — ไฟล์เดียว: วันที่รับ/กลับคลัง + หมวด/เหตุผล + แผนนัดเข้ารับ
 //   1 ออเดอร์ = อย่างน้อย 1 แถว (แตกแถวตามจำนวนหมวด) · วันที่ใส่เฉพาะแถวแรกของแต่ละ RG
-//   เคารพ filter เดียวกับหน้า "งานที่ได้รับมอบหมาย" (สถานะ + ค้นหา)
-router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
+//   เคารพ filter ตามหน้าจอ (สถานะ + พื้นที่ + ค้นหา)
+router.get('/vendor-template', requireRole('vendor', 'supervisor', 'admin'), async (req, res) => {
   let q = supabase.from('rg_headers').select('*');
   if (req.user.role === 'vendor') q = q.eq('vendor_id', req.user.id);
   if (req.query.status) q = q.eq('status', req.query.status);
+  if (req.query.area) q = q.ilike('area', `%${req.query.area.trim()}%`);
   q = applySearch(q, req.query.q);
   const { data: heads, error } = await q.order('rg_no', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
@@ -501,8 +502,8 @@ router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
   res.end(buf);
 });
 
-// POST /api/orders/vendor-import  (vendor) — ไฟล์เดียว: อัปเดตวันที่ + แทนที่หมวด/เหตุผล
-router.post('/vendor-import', requireRole('vendor'), upload.single('file'), async (req, res) => {
+// POST /api/orders/vendor-import  (vendor, supervisor, admin) — ไฟล์เดียว: อัปเดตวันที่ + แทนที่หมวด/เหตุผล
+router.post('/vendor-import', requireRole('vendor', 'supervisor', 'admin'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'ไม่พบไฟล์ (field name ต้องเป็น "file")' });
   let rows;
   try {
@@ -605,14 +606,17 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
     if (d.received_date) patch.received_date = d.received_date;
     if (d.returned_date) patch.returned_date = d.returned_date;
 
-    // แผนนัดเข้ารับ: เฉพาะกรณีที่ยังไม่มีค่าในฐานข้อมูล (ถ้ามีอยู่แล้ว vendor แก้ไม่ได้)
+    const isSup = req.user.role === 'supervisor' || req.user.role === 'admin';
+    // แผนนัดเข้ารับ:
+    //   - vendor: แก้ไขได้เฉพาะใบที่ยังไม่มีแผนเข้ารับในระบบ
+    //   - supervisor/admin: สามารถเพิ่ม หรือแก้ไขปรับเปลี่ยนค่าแผนเข้ารับได้
     if (d.plan_pickup_date) {
-      if (cur.plan_pickup_date) {
+      if (cur.plan_pickup_date && !isSup) {
         if (cur.plan_pickup_date !== d.plan_pickup_date) planLocked++;
-      } else {
+      } else if (!cur.plan_pickup_date || (isSup && cur.plan_pickup_date !== d.plan_pickup_date)) {
         patch.plan_pickup_date = d.plan_pickup_date;
         planPickupUpdated++;
-        if (!cur.plan_return_date && retRules.length) {
+        if (retRules.length && (!cur.plan_return_date || isSup)) {
           try {
             const { resolveReturnRule, addDaysToDate } = await import('../lib/slaRules.js');
             const rRule = resolveReturnRule(cur, retRules);
