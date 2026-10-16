@@ -476,6 +476,7 @@ router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
       'กล่อง': h.qty_boxes,
       'ชิ้น': h.qty_pieces,
       // วันที่ใส่เฉพาะแถวแรกของแต่ละออเดอร์ (แถวถัดไปเว้นว่าง)
+      'แผนนัดเข้ารับ (dd/mm/yyyy)': i === 0 ? fmt(h.plan_pickup_date) : '',
       'วันที่รับสินค้า (dd/mm/yyyy)': i === 0 ? fmt(h.received_date) : '',
       'วันที่กลับคลัง (dd/mm/yyyy)': i === 0 ? fmt(h.returned_date) : '',
       'หมวด': n.category,
@@ -486,7 +487,9 @@ router.get('/vendor-template', requireRole('vendor'), async (req, res) => {
   }
   const ws = xlsx.utils.json_to_sheet(rows.length ? rows : [{
     'เลขที่ RG': '', 'สถานะ': '', 'ร้านค้า': '', 'อำเภอ': '', 'จังหวัด': '',
-    'กล่อง': '', 'ชิ้น': '', 'วันที่รับสินค้า (dd/mm/yyyy)': '',
+    'กล่อง': '', 'ชิ้น': '',
+    'แผนนัดเข้ารับ (dd/mm/yyyy)': '',
+    'วันที่รับสินค้า (dd/mm/yyyy)': '',
     'วันที่กลับคลัง (dd/mm/yyyy)': '', 'หมวด': '', 'เหตุผล': '',
     'จำนวนที่รับคืน': '', 'หน่วย': '',
   }]);
@@ -514,24 +517,25 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
   if (hi < 0) return res.status(400).json({ error: 'ไม่พบหัวคอลัมน์ "เลขที่ RG" ในไฟล์' });
   const hdr = rows[hi].map((c) => String(c ?? ''));
   const cRg = hdr.findIndex((h) => /เลขที่ RG/i.test(h));
+  const cPlan = hdr.findIndex((h) => /แผนนัดเข้ารับ|แผนเข้ารับ/i.test(h));
   const cRecv = hdr.findIndex((h) => /วันที่รับ/i.test(h));
   const cRet = hdr.findIndex((h) => /กลับคลัง|กลับคืน/i.test(h));
   const cCat = hdr.findIndex((h) => /หมวด/i.test(h));
   const cRea = hdr.findIndex((h) => /เหตุผล/i.test(h));
   const cQty = hdr.findIndex((h) => /จำนวนที่รับคืน/i.test(h));
   const cUnit = hdr.findIndex((h) => /^\s*หน่วย\s*$/i.test(h));
-  if (cRecv < 0 && cRet < 0 && cCat < 0 && cRea < 0) {
+  if (cPlan < 0 && cRecv < 0 && cRet < 0 && cCat < 0 && cRea < 0) {
     return res.status(400).json({ error: 'ไม่พบหัวคอลัมน์วันที่ หรือ หมวด/เหตุผล ในไฟล์' });
   }
 
-  // งานของ vendor นี้เท่านั้น
-  let sel = supabase.from('rg_headers').select('rg_no, status, assigned_at, received_date, returned_date');
+  // งานของ vendor นี้เท่านั้น (ดึง sold_to, zone, province เพื่อใช้คำนวณ SLA แผนส่งกลับ)
+  let sel = supabase.from('rg_headers').select('rg_no, status, assigned_at, received_date, returned_date, plan_pickup_date, plan_return_date, sold_to, sold_to_code, zone, province');
   if (req.user.role === 'vendor') sel = sel.eq('vendor_id', req.user.id);
   const { data: mine } = await sel;
   const mymap = new Map((mine || []).map((r) => [r.rg_no, r]));
 
   // เก็บวันที่ (ต่อ RG — เอาค่าที่กรอกล่าสุด) และแตกหมวดต่อ RG
-  const dateByRg = new Map();       // rgNo -> { received_date?, returned_date? }
+  const dateByRg = new Map();       // rgNo -> { plan_pickup_date?, received_date?, returned_date? }
   const notesByRg = new Map();      // rgNo -> [{category, reason}]
   const seenNotes = new Set();      // RG ที่ปรากฏในไฟล์ (ใช้ตัดสินว่าจะแทนที่หมวด)
   let notMine = 0, badRow = 0;
@@ -541,10 +545,12 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
     if (!mymap.has(rgNo)) { notMine++; continue; }
 
     // ---- วันที่ (ถ้ามีในแถวนี้) ----
+    const plan_pickup_date = cPlan >= 0 ? toISODate(r[cPlan]) : null;
     const received_date = cRecv >= 0 ? toISODate(r[cRecv]) : null;
     const returned_date = cRet >= 0 ? toISODate(r[cRet]) : null;
-    if (received_date || returned_date) {
+    if (plan_pickup_date || received_date || returned_date) {
       const d = dateByRg.get(rgNo) || {};
+      if (plan_pickup_date) d.plan_pickup_date = plan_pickup_date;
       if (received_date) d.received_date = received_date;
       if (returned_date) d.returned_date = returned_date;
       dateByRg.set(rgNo, d);
@@ -576,21 +582,69 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
     }
   }
 
+  // โหลด SLA return rules ล่วงหน้ากรณีมีแผนนัดเข้ารับ
+  let retRules = [];
+  const hasAnyPlan = [...dateByRg.values()].some((d) => d.plan_pickup_date);
+  if (hasAnyPlan) {
+    try {
+      const { loadReturnRules } = await import('../lib/slaRules.js');
+      retRules = await loadReturnRules();
+    } catch {}
+  }
+
   // ---- บันทึกวันที่ ----
   let updated = 0, skipped = 0, locked = 0, autoClosed = 0;
+  let planPickupUpdated = 0, planLocked = 0;
   const badDates = []; // RG ที่วันที่ผิดลำดับ — ข้ามแล้วแจ้งกลับ
   for (const [rgNo, d] of dateByRg) {
     const cur = mymap.get(rgNo);
     if (cur.status === 'completed') { locked++; continue; }         // ปิดงานแล้ว — แก้ไม่ได้
-    const derr = dateOrderError(cur, d);
+    const derr = dateOrderError(cur, { received_date: d.received_date, returned_date: d.returned_date });
     if (derr) { badDates.push(`${rgNo} (${derr})`); continue; }     // วันที่ผิดลำดับ — ข้าม
-    const patch = { updated_at: now(), ...d };
+    const patch = { updated_at: now() };
+    if (d.received_date) patch.received_date = d.received_date;
+    if (d.returned_date) patch.returned_date = d.returned_date;
+
+    // แผนนัดเข้ารับ: เฉพาะกรณีที่ยังไม่มีค่าในฐานข้อมูล (ถ้ามีอยู่แล้ว vendor แก้ไม่ได้)
+    if (d.plan_pickup_date) {
+      if (cur.plan_pickup_date) {
+        if (cur.plan_pickup_date !== d.plan_pickup_date) planLocked++;
+      } else {
+        patch.plan_pickup_date = d.plan_pickup_date;
+        planPickupUpdated++;
+        if (!cur.plan_return_date && retRules.length) {
+          try {
+            const { resolveReturnRule, addDaysToDate } = await import('../lib/slaRules.js');
+            const rRule = resolveReturnRule(cur, retRules);
+            if (rRule && rRule.days != null) {
+              patch.plan_return_date = addDaysToDate(d.plan_pickup_date, rRule.days);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (!patch.received_date && !patch.returned_date && !patch.plan_pickup_date) {
+      skipped++;
+      continue;
+    }
+
     patch.status = vendorStatus(cur, patch);
-    const { error } = await supabase.from('rg_headers').update(patch)
+    let { error } = await supabase.from('rg_headers').update(patch)
       .eq('rg_no', rgNo).neq('status', 'completed');
+    if (error && error.code === '42703') {
+      delete patch.plan_pickup_date;
+      delete patch.plan_return_date;
+      ({ error } = await supabase.from('rg_headers').update(patch)
+        .eq('rg_no', rgNo).neq('status', 'completed'));
+    }
     if (!error) {
       updated++;
-      await trackDates(rgNo, req.user.id, cur, d, '(excel)');
+      await trackDates(rgNo, req.user.id, cur, { received_date: d.received_date, returned_date: d.returned_date },
+        [patch.plan_pickup_date && `แผนเข้ารับ ${patch.plan_pickup_date}`, d.received_date && `รับ ${d.received_date}`, d.returned_date && `กลับคลัง ${d.returned_date}`].filter(Boolean).join(' · ') || '(excel)');
+      if (patch.plan_pickup_date && !d.received_date && !d.returned_date) {
+        await track(rgNo, patch.status || cur.status, req.user.id, { note: `แผนเข้ารับ ${patch.plan_pickup_date} (excel)` });
+      }
       // วันที่ครบแล้ว + มีวันปิดงานค้างจากไฟล์ GR → ปิดให้อัตโนมัติ
       if (await applyPendingCompletion(rgNo)) autoClosed++;
     }
@@ -633,6 +687,7 @@ router.post('/vendor-import', requireRole('vendor'), upload.single('file'), asyn
 
   res.json({
     updated, skipped, not_mine: notMine, locked,
+    plan_pickup_updated: planPickupUpdated, plan_locked: planLocked,
     notes_updated: notesUpdated, notes_saved: notesSaved, bad_rows: badRow,
     bad_dates: badDates, auto_completed: autoClosed,
   });

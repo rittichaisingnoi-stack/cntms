@@ -332,7 +332,7 @@ VIEWS.myjobs = {
           <input id="jfile" type="file" accept=".xlsx,.xls" class="in" style="flex:1"/>
           <button class="btn primary" id="jupload" style="width:auto">⬆️ Upload วันที่ + หมวด/เหตุผล/จำนวน</button>
         </div>
-        <p class="hint">ไฟล์เดียวรวมทั้ง วันที่รับ/กลับคลัง และ หมวด/เหตุผล/จำนวนที่รับคืน/หน่วย (1 ออเดอร์แตกได้หลายแถวตามจำนวนหมวด)
+        <p class="hint">ไฟล์เดียวรวมทั้ง แผนนัดเข้ารับ (สำหรับใบที่ยังไม่มีแผน), วันที่รับ/กลับคลัง และ หมวด/เหตุผล/จำนวนที่รับคืน/หน่วย (1 ออเดอร์แตกได้หลายแถวตามจำนวนหมวด)
         · <b>Load Data Excel จะดึงตามตัวกรองด้านบน</b> (ค้นหา/สถานะ)</p>
         <div id="jmsg"></div>
       </div>
@@ -485,8 +485,10 @@ VIEWS.myjobs = {
         const r = await api('/orders/vendor-import', { method: 'POST', body: fd });
         const badDates = r.bad_dates || [];
         out.innerHTML = `<p class="ok">บันทึกวันที่ ${r.updated} รายการ`
+          + (r.plan_pickup_updated ? ` (เพิ่มแผนเข้ารับ ${r.plan_pickup_updated})` : '')
           + ` · หมวด+เหตุผล ${r.notes_updated} ออเดอร์ (${r.notes_saved} แถว)`
           + (r.locked ? ` · <span class="err">ปิดงานแล้วแก้ไม่ได้ ${r.locked}</span>` : '')
+          + (r.plan_locked ? ` · <span class="hint" style="color:var(--c-muted)">มีแผนเข้ารับเดิมอยู่แล้ว ${r.plan_locked}</span>` : '')
           + (r.bad_rows ? ` · <span class="err">ข้ามแถวไม่ครบ ${r.bad_rows}</span>` : '')
           + (badDates.length ? ` · <span class="err">ข้ามวันที่ผิดลำดับ ${badDates.length}</span>` : '')
           + (r.not_mine ? ` · <span class="err">ไม่ใช่งานของคุณ ${r.not_mine}</span>` : '') + '</p>'
