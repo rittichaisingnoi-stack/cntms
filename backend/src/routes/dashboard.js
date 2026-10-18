@@ -2,6 +2,7 @@ import { Router } from 'express';
 import xlsx from 'xlsx';
 import { supabase } from '../lib/supabase.js';
 import { applySearch } from '../lib/search.js';
+import { loadPickupRules, DEFAULT_PICKUP_RULES } from '../lib/slaRules.js';
 
 const router = Router();
 
@@ -112,6 +113,22 @@ router.get('/export', async (req, res) => {
     return `${fmtD(dateVal)} ${fmtTS(ts).slice(11)}`; // วันที่ที่บันทึก + เวลาที่คีย์
   };
 
+  // --- Sales Org และชื่อ Sales Org ---
+  const pickupRules = await loadPickupRules();
+  const salesOrgNameMap = new Map();
+  for (const rule of DEFAULT_PICKUP_RULES) {
+    if (rule.sales_org) salesOrgNameMap.set(String(rule.sales_org).trim().toLowerCase(), rule.sales_org_name);
+  }
+  for (const rule of pickupRules || []) {
+    if (rule.sales_org && rule.sales_org_name) {
+      salesOrgNameMap.set(String(rule.sales_org).trim().toLowerCase(), rule.sales_org_name);
+    }
+  }
+  const salesOrgName = (code) => {
+    if (!code) return '';
+    return salesOrgNameMap.get(String(code).trim().toLowerCase()) || '';
+  };
+
   const rows = orders.map((r) => ({
     'เลขที่ RG': r.rg_no,
     'หมายเลขอ้างอิง': r.reference,
@@ -145,6 +162,8 @@ router.get('/export', async (req, res) => {
     'User Close': actor(r.rg_no, 'completed'),
     'Doc. WH': r.doc_wh,
     'Remark': r.reason_note,
+    'Sales Org': r.sales_org || '',
+    'ชื่อ Sales Org': salesOrgName(r.sales_org),
   }));
   const ws = xlsx.utils.json_to_sheet(rows);
   const wb = xlsx.utils.book_new();
