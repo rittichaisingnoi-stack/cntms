@@ -38,23 +38,30 @@ router.get('/summary', async (req, res) => {
 // GET /api/dashboard/export — ดาวน์โหลดเป็น .xlsx (เคารพ filter เดียวกับหน้าออเดอร์ทั้งหมด)
 router.get('/export', async (req, res) => {
   const { from, to, status, area, q: search } = req.query;
-  let q = supabase.from('rg_headers').select('*');
-  q = scope(q, req.user);
-  // status รับได้ทั้งค่าเดียว และหลายค่าคั่นด้วย comma (ให้ตรงกับ filter หน้าออเดอร์)
-  if (status) {
-    const list = String(status).split(',').map((s) => s.trim()).filter(Boolean);
-    q = list.length > 1 ? q.in('status', list) : q.eq('status', list[0] || status);
+  const orders = [];
+  let fromIdx = 0;
+  const pageSize = 1000;
+  while (true) {
+    let q = supabase.from('rg_headers').select('*');
+    q = scope(q, req.user);
+    // status รับได้ทั้งค่าเดียว และหลายค่าคั่นด้วย comma (ให้ตรงกับ filter หน้าออเดอร์)
+    if (status) {
+      const list = String(status).split(',').map((s) => s.trim()).filter(Boolean);
+      q = list.length > 1 ? q.in('status', list) : q.eq('status', list[0] || status);
+    }
+    if (area && area.trim()) q = q.ilike('area', `%${area.trim()}%`);
+    q = applySearch(q, search);
+    if (from) q = q.gte('rg_date', from);
+    if (to) q = q.lte('rg_date', to);
+    q = q.order('rg_date', { ascending: false }).range(fromIdx, fromIdx + pageSize - 1);
+
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data || !data.length) break;
+    orders.push(...data);
+    if (data.length < pageSize) break;
+    fromIdx += pageSize;
   }
-  if (area && area.trim()) q = q.ilike('area', `%${area.trim()}%`);
-  q = applySearch(q, search);
-  if (from) q = q.gte('rg_date', from);
-  if (to) q = q.lte('rg_date', to);
-  q = q.order('rg_date', { ascending: false });
-
-  const { data, error } = await q;
-  if (error) return res.status(500).json({ error: error.message });
-
-  const orders = data || [];
 
   // --- ผู้ใช้: Vendor (vendor_id) + ผู้มอบหมาย (admin_id) ---
   const userIds = new Set();
@@ -68,25 +75,34 @@ router.get('/export', async (req, res) => {
   const stampAt = new Map();   // `${rg_no}|${status}` -> created_at (timestamptz)
   const rgNos = orders.map((r) => r.rg_no);
   if (rgNos.length) {
-    const { data: tracks } = await supabase
-      .from('order_tracking')
-      .select('rg_no, status, action_by, created_at')
-      .in('rg_no', rgNos)
-      .in('status', ['received', 'returned', 'gr_received', 'completed'])
-      .order('created_at', { ascending: true });
-    for (const t of tracks || []) {
-      stampAt.set(`${t.rg_no}|${t.status}`, t.created_at); // แถวหลังสุด (ล่าสุด) ทับ
-      if (t.action_by == null) continue;
-      actorBy.set(`${t.rg_no}|${t.status}`, t.action_by);
-      userIds.add(t.action_by);
+    for (let i = 0; i < rgNos.length; i += 150) {
+      const chunk = rgNos.slice(i, i + 150);
+      const { data: tracks, error: trkErr } = await supabase
+        .from('order_tracking')
+        .select('rg_no, status, action_by, created_at')
+        .in('rg_no', chunk)
+        .in('status', ['received', 'returned', 'gr_received', 'completed'])
+        .order('created_at', { ascending: true });
+      if (trkErr) return res.status(500).json({ error: trkErr.message });
+      for (const t of tracks || []) {
+        stampAt.set(`${t.rg_no}|${t.status}`, t.created_at); // แถวหลังสุด (ล่าสุด) ทับ
+        if (t.action_by == null) continue;
+        actorBy.set(`${t.rg_no}|${t.status}`, t.action_by);
+        userIds.add(t.action_by);
+      }
     }
   }
 
   // แปลง userId -> ชื่อที่แสดง
   const userName = new Map();
   if (userIds.size) {
-    const { data: users } = await supabase.from('users').select('id, display_name').in('id', [...userIds]);
-    for (const u of users || []) userName.set(u.id, u.display_name);
+    const userArr = [...userIds];
+    for (let i = 0; i < userArr.length; i += 150) {
+      const chunk = userArr.slice(i, i + 150);
+      const { data: users, error: uErr } = await supabase.from('users').select('id, display_name').in('id', chunk);
+      if (uErr) return res.status(500).json({ error: uErr.message });
+      for (const u of users || []) userName.set(u.id, u.display_name);
+    }
   }
   const nameOf = (id) => (id != null ? (userName.get(id) || `#${id}`) : '');
   const actor = (rg, st) => nameOf(actorBy.get(`${rg}|${st}`));

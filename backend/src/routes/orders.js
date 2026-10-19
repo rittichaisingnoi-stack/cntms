@@ -444,23 +444,36 @@ router.put('/bulk-vendor-notes', requireRole('vendor'), async (req, res) => {
 //   1 ออเดอร์ = อย่างน้อย 1 แถว (แตกแถวตามจำนวนหมวด) · วันที่ใส่เฉพาะแถวแรกของแต่ละ RG
 //   เคารพ filter ตามหน้าจอ (สถานะ + พื้นที่ + ค้นหา)
 router.get('/vendor-template', requireRole('vendor', 'supervisor', 'admin'), async (req, res) => {
-  let q = supabase.from('rg_headers').select('*');
-  if (req.user.role === 'vendor') q = q.eq('vendor_id', req.user.id);
-  if (req.query.status) q = q.eq('status', req.query.status);
-  if (req.query.area) q = q.ilike('area', `%${req.query.area.trim()}%`);
-  q = applySearch(q, req.query.q);
-  const { data: heads, error } = await q.order('rg_no', { ascending: true });
-  if (error) return res.status(500).json({ error: error.message });
+  const heads = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    let q = supabase.from('rg_headers').select('*');
+    if (req.user.role === 'vendor') q = q.eq('vendor_id', req.user.id);
+    if (req.query.status) q = q.eq('status', req.query.status);
+    if (req.query.area) q = q.ilike('area', `%${req.query.area.trim()}%`);
+    q = applySearch(q, req.query.q);
+    const { data: pageData, error } = await q.order('rg_no', { ascending: true }).range(from, from + pageSize - 1);
+    if (error) return res.status(500).json({ error: error.message });
+    if (!pageData || !pageData.length) break;
+    heads.push(...pageData);
+    if (pageData.length < pageSize) break;
+    from += pageSize;
+  }
 
-  const rgNos = (heads || []).map((h) => h.rg_no);
+  const rgNos = heads.map((h) => h.rg_no);
   const notesByRg = new Map();
   if (rgNos.length) {
-    const { data: notes } = await supabase
-      .from('rg_vendor_notes').select('rg_no, category, reason, return_qty, unit')
-      .in('rg_no', rgNos).order('id', { ascending: true });
-    for (const n of notes || []) {
-      if (!notesByRg.has(n.rg_no)) notesByRg.set(n.rg_no, []);
-      notesByRg.get(n.rg_no).push(n);
+    for (let i = 0; i < rgNos.length; i += 150) {
+      const chunk = rgNos.slice(i, i + 150);
+      const { data: notes, error: notesError } = await supabase
+        .from('rg_vendor_notes').select('rg_no, category, reason, return_qty, unit')
+        .in('rg_no', chunk).order('id', { ascending: true });
+      if (notesError) return res.status(500).json({ error: notesError.message });
+      for (const n of notes || []) {
+        if (!notesByRg.has(n.rg_no)) notesByRg.set(n.rg_no, []);
+        notesByRg.get(n.rg_no).push(n);
+      }
     }
   }
 
@@ -476,6 +489,8 @@ router.get('/vendor-template', requireRole('vendor', 'supervisor', 'admin'), asy
       'จังหวัด': h.province,
       'กล่อง': h.qty_boxes,
       'ชิ้น': h.qty_pieces,
+      'วันที่พิมพ์': i === 0 ? fmt(h.rg_date) : '',
+      'มอบหมาย': i === 0 ? fmt(h.assigned_at) : '',
       // วันที่ใส่เฉพาะแถวแรกของแต่ละออเดอร์ (แถวถัดไปเว้นว่าง)
       'แผนนัดเข้ารับ (dd/mm/yyyy)': i === 0 ? fmt(h.plan_pickup_date) : '',
       'วันที่รับสินค้า (dd/mm/yyyy)': i === 0 ? fmt(h.received_date) : '',
@@ -489,6 +504,7 @@ router.get('/vendor-template', requireRole('vendor', 'supervisor', 'admin'), asy
   const ws = xlsx.utils.json_to_sheet(rows.length ? rows : [{
     'เลขที่ RG': '', 'สถานะ': '', 'ร้านค้า': '', 'อำเภอ': '', 'จังหวัด': '',
     'กล่อง': '', 'ชิ้น': '',
+    'วันที่พิมพ์': '', 'มอบหมาย': '',
     'แผนนัดเข้ารับ (dd/mm/yyyy)': '',
     'วันที่รับสินค้า (dd/mm/yyyy)': '',
     'วันที่กลับคลัง (dd/mm/yyyy)': '', 'หมวด': '', 'เหตุผล': '',
@@ -529,11 +545,25 @@ router.post('/vendor-import', requireRole('vendor', 'supervisor', 'admin'), uplo
     return res.status(400).json({ error: 'ไม่พบหัวคอลัมน์วันที่ หรือ หมวด/เหตุผล ในไฟล์' });
   }
 
-  // งานของ vendor นี้เท่านั้น (ดึง sold_to, zone, province เพื่อใช้คำนวณ SLA แผนส่งกลับ)
-  let sel = supabase.from('rg_headers').select('rg_no, status, assigned_at, received_date, returned_date, plan_pickup_date, plan_return_date, sold_to, sold_to_code, zone, province');
-  if (req.user.role === 'vendor') sel = sel.eq('vendor_id', req.user.id);
-  const { data: mine } = await sel;
-  const mymap = new Map((mine || []).map((r) => [r.rg_no, r]));
+  // ดึงเฉพาะ order ที่มีในไฟล์ (แบ่ง query ทีละ 150 RG เพื่อไม่ให้เกิน limit ของ URL / PostgREST)
+  const fileRgNos = [...new Set(
+    rows.slice(hi + 1)
+      .map((r) => String(r[cRg] ?? '').trim())
+      .filter((rg) => /^\d{3}-\d{4}-\d{4,}$/.test(rg))
+  )];
+  const mine = [];
+  for (let i = 0; i < fileRgNos.length; i += 150) {
+    const chunk = fileRgNos.slice(i, i + 150);
+    let sel = supabase
+      .from('rg_headers')
+      .select('rg_no, status, assigned_at, received_date, returned_date, plan_pickup_date, plan_return_date, sold_to, sold_to_code, zone, province')
+      .in('rg_no', chunk);
+    if (req.user.role === 'vendor') sel = sel.eq('vendor_id', req.user.id);
+    const { data: chunkData, error: chunkErr } = await sel;
+    if (chunkErr) return res.status(500).json({ error: chunkErr.message });
+    if (chunkData) mine.push(...chunkData);
+  }
+  const mymap = new Map(mine.map((r) => [r.rg_no, r]));
 
   // เก็บวันที่ (ต่อ RG — เอาค่าที่กรอกล่าสุด) และแตกหมวดต่อ RG
   const dateByRg = new Map();       // rgNo -> { plan_pickup_date?, received_date?, returned_date? }
