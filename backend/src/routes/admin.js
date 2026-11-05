@@ -1,10 +1,16 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import xlsx from 'xlsx';
+import multer from 'multer';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { supabase } from '../lib/supabase.js';
 import { requireRole } from '../lib/auth.js';
 import { RULE_FIELDS, FIELD_PRIORITY, autoAssignPending } from '../lib/areaRules.js';
+import { importRulesFromExcel } from '../scripts/importRulesMaster.js';
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const router = Router();
 
 // ทั้งหมดเฉพาะ Supervisor (requireRole อนุญาต supervisor เสมอ)
@@ -98,10 +104,36 @@ router.get('/area-rules/fields', (_req, res) => {
   res.json(Object.entries(RULE_FIELDS).map(([key, label]) => ({ key, label })));
 });
 
+const norm = (v) => String(v ?? '').trim().toLowerCase();
+const normCode = (v) => norm(v).replace(/^0+/, '');
+const isMatch = (a, b) => {
+  const na = norm(a), nb = norm(b);
+  if (!na || !nb) return false;
+  return na === nb || normCode(na) === normCode(nb);
+};
+
 router.get('/area-rules', async (_req, res) => {
-  const { data, error } = await supabase.from('area_rules').select('*').order('priority').order('id');
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data || []);
+  try {
+    let all = [];
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data, error } = await supabase
+        .from('area_rules')
+        .select('*')
+        .order('priority')
+        .order('id')
+        .range(from, from + pageSize - 1);
+      if (error) return res.status(500).json({ error: error.message });
+      if (!data || data.length === 0) break;
+      all = all.concat(data);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+    res.json(all);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post('/area-rules', async (req, res) => {
@@ -111,16 +143,23 @@ router.post('/area-rules', async (req, res) => {
   if (!normVal) return res.status(400).json({ error: 'ต้องมีค่าที่ต้องตรง (match_value)' });
   if (!vendor_id) return res.status(400).json({ error: 'ต้องเลือก Vendor' });
 
-  // ตรวจสอบว่ามี rule ที่ rule_field เดียวกันและ match_value เดียวกันอยู่แล้วหรือไม่ (case-insensitive)
-  const { data: allRules, error: fetchErr } = await supabase
-    .from('area_rules')
-    .select('id, priority, rule_field, match_value, area, vendor_id, enabled')
-    .eq('rule_field', rule_field);
-  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+  // ตรวจสอบว่ามี rule ที่ rule_field เดียวกันและ match_value เดียวกันอยู่แล้วหรือไม่ (case-insensitive & leading-zero flexible)
+  let allRules = [];
+  let from = 0;
+  while (true) {
+    const { data: page, error: fetchErr } = await supabase
+      .from('area_rules')
+      .select('id, priority, rule_field, match_value, area, vendor_id, enabled')
+      .eq('rule_field', rule_field)
+      .range(from, from + 999);
+    if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+    if (!page || page.length === 0) break;
+    allRules = allRules.concat(page);
+    if (page.length < 1000) break;
+    from += 1000;
+  }
 
-  const existing = (allRules || []).find(
-    (r) => String(r.match_value || '').trim().toLowerCase() === normVal.toLowerCase()
-  );
+  const existing = allRules.find((r) => isMatch(r.match_value, normVal));
 
   if (existing) {
     if (!replace) {
@@ -187,15 +226,24 @@ router.put('/area-rules/:id', async (req, res) => {
   if (patch.rule_field || patch.match_value) {
     const { data: currentRule } = await supabase.from('area_rules').select('*').eq('id', req.params.id).maybeSingle();
     const targetField = patch.rule_field || currentRule?.rule_field;
-    const targetVal = (patch.match_value || currentRule?.match_value || '').trim().toLowerCase();
+    const targetVal = (patch.match_value || currentRule?.match_value || '').trim();
 
-    const { data: others } = await supabase
-      .from('area_rules')
-      .select('id, rule_field, match_value, vendor_id')
-      .eq('rule_field', targetField)
-      .neq('id', req.params.id);
+    let others = [];
+    let from = 0;
+    while (true) {
+      const { data: page } = await supabase
+        .from('area_rules')
+        .select('id, rule_field, match_value, vendor_id')
+        .eq('rule_field', targetField)
+        .neq('id', req.params.id)
+        .range(from, from + 999);
+      if (!page || page.length === 0) break;
+      others = others.concat(page);
+      if (page.length < 1000) break;
+      from += 1000;
+    }
 
-    const dup = (others || []).find((r) => String(r.match_value || '').trim().toLowerCase() === targetVal);
+    const dup = others.find((r) => isMatch(r.match_value, targetVal));
     if (dup && !req.body.replace) {
       let oldVendorName = `#${dup.vendor_id}`;
       const { data: vUser } = await supabase.from('users').select('display_name').eq('id', dup.vendor_id).maybeSingle();
@@ -220,6 +268,27 @@ router.delete('/area-rules/:id', async (req, res) => {
   const { error } = await supabase.from('area_rules').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
+});
+
+// POST /api/admin/area-rules/import-excel — นำเข้าหรือรีเซ็ตกติกาจาก Excel (เช่น Rules Master.xlsx)
+router.post('/area-rules/import-excel', upload.single('file'), async (req, res) => {
+  let tempPath = null;
+  try {
+    let targetPath = null;
+    if (req.file) {
+      tempPath = path.join(os.tmpdir(), `rules_upload_${Date.now()}.xlsx`);
+      fs.writeFileSync(tempPath, req.file.buffer);
+      targetPath = tempPath;
+    }
+    const result = await importRulesFromExcel(targetPath);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (tempPath && fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch {}
+    }
+  }
 });
 
 // POST /api/admin/area-rules/apply — Re-assign: จับคู่ Vendor ให้ order pending ทั้งหมดตามกติกาปัจจุบัน

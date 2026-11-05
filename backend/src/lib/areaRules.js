@@ -14,20 +14,41 @@ export const FIELD_ORDER = ['sold_to', 'sold_to_code', 'zone', 'region'];
 export const FIELD_PRIORITY = { sold_to: 1, sold_to_code: 2, zone: 3, region: 4 };
 
 export async function loadRules() {
-  const { data, error } = await supabase
-    .from('area_rules').select('*').eq('enabled', true).order('priority').order('id');
-  if (error) throw error;
-  return data || [];
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await supabase
+      .from('area_rules')
+      .select('*')
+      .eq('enabled', true)
+      .order('priority')
+      .order('id')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
 }
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
+const normCode = (v) => norm(v).replace(/^0+/, '');
+const isMatch = (a, b) => {
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return false;
+  return na === nb || normCode(na) === normCode(nb);
+};
 
 // หา vendor ของ order: ไล่ field ตาม FIELD_ORDER แล้วหา rule แรกที่ค่าตรงและมี vendor_id
 export function resolveVendor(header, rules) {
   for (const field of FIELD_ORDER) {
-    const v = norm(header[field]);
-    if (!v) continue;
-    const rule = rules.find((r) => r.vendor_id && r.rule_field === field && norm(r.match_value) === v);
+    const v = header[field];
+    if (v == null || String(v).trim() === '') continue;
+    const rule = rules.find((r) => r.vendor_id && r.rule_field === field && isMatch(r.match_value, v));
     if (rule) return rule;
   }
   return null;

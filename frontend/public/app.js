@@ -1380,17 +1380,58 @@ function openEditVendor(v, reload) {
 VIEWS.arearules = {
   id: 'arearules', label: 'กติกาพื้นที่',
   render: () => {
-    const w = el(`<div class="view"><h3>กติกาจัดพื้นที่อัตโนมัติ (Priority Rules)</h3>
-      <p class="hint">ระบบจับคู่ order → Vendor โดยไล่จากเจาะจงไปกว้าง: <b>Ship To Code → Ship To → Sold To Code → เขต</b>
-      (Priority ตั้งอัตโนมัติตามเงื่อนไขที่เลือก — ไม่ต้องกรอกเอง)</p>
-      <div class="card"><h4>เพิ่ม Rule</h4>
-        <select id="r_field" class="in"></select>
-        <input id="r_val" class="in" placeholder="ค่าที่ต้องตรง เช่น 011606 / 153"/>
-        <select id="r_vendor" class="in"><option value="">— เลือก Vendor —</option></select>
-        <button class="btn primary" id="r_add">เพิ่ม Rule</button><div id="r_err" class="err"></div></div>
-      <button class="btn red" id="r_apply">⟳ Re-assign งานรอจัดพื้นที่ตาม Rules</button>
-      <div id="r_apply_out" class="hint"></div>
-      <div id="rlist" class="results" style="margin-top:12px"></div></div>`);
+    const w = el(`<div class="view">
+      <div class="row sp" style="align-items:flex-start;flex-wrap:wrap;gap:12px">
+        <div>
+          <h3 style="margin:0 0 6px">กติกาจัดพื้นที่อัตโนมัติ (Priority Rules)</h3>
+          <p class="hint" style="margin:0">ระบบจับคู่ order → Vendor โดยไล่จากเจาะจงไปกว้าง: <b>Ship To (ปลายทาง) → Sold To Code → เขต → Region</b>
+          (Priority ตั้งอัตโนมัติตามเงื่อนไขที่เลือก — ไม่ต้องกรอกเอง)</p>
+        </div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <input type="file" id="r_file_input" accept=".xlsx,.xls" style="display:none"/>
+          <button class="btn secondary" id="r_import_btn">📥 นำเข้าจาก Excel</button>
+          <button class="btn ghost" id="r_sync_btn" title="ซิงค์จาก Rules Master.xlsx บนเซิร์ฟเวอร์">⟳ ซิงค์ไฟล์ Master</button>
+          <button class="btn red" id="r_apply">⟳ Re-assign งานรอจัดพื้นที่</button>
+        </div>
+      </div>
+      <div id="r_apply_out" class="hint" style="margin:8px 0"></div>
+
+      <div class="card" style="margin-top:14px">
+        <h4 style="margin:0 0 10px">เพิ่ม Rule ใหม่</h4>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <select id="r_field" class="in" style="flex:1;min-width:180px"></select>
+          <input id="r_val" class="in" style="flex:1;min-width:180px" placeholder="ค่าที่ต้องตรง เช่น 11606 / 153"/>
+          <select id="r_vendor" class="in" style="flex:1;min-width:200px"><option value="">— เลือก Vendor —</option></select>
+          <button class="btn primary" id="r_add">เพิ่ม Rule</button>
+        </div>
+        <div id="r_err" class="err" style="margin-top:6px"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:12px;align-items:center">
+          <div class="row" style="gap:6px" id="r_filter_tabs">
+            <button class="chip btn-chip active" data-tab="all">ทั้งหมด (<span id="cnt_all">0</span>)</button>
+            <button class="chip btn-chip" data-tab="sold_to">Ship To (<span id="cnt_sold_to">0</span>)</button>
+            <button class="chip btn-chip" data-tab="sold_to_code">Sold To Code (<span id="cnt_sold_to_code">0</span>)</button>
+            <button class="chip btn-chip" data-tab="zone">เขต (<span id="cnt_zone">0</span>)</button>
+          </div>
+          <div class="row" style="gap:8px;flex:1;max-width:360px">
+            <input id="r_search" class="in" style="margin:0;width:100%" placeholder="🔍 ค้นหากติกา (รหัส, ชื่อร้าน, Vendor)..."/>
+          </div>
+        </div>
+
+        <div class="row sp" style="font-size:12px;color:var(--muted);margin-bottom:8px;align-items:center">
+          <div id="r_status_txt">กำลังโหลดข้อมูล…</div>
+          <div class="row" id="r_pager" style="gap:6px;align-items:center;display:none">
+            <button class="chip btn-chip" id="r_prev">‹ ก่อนหน้า</button>
+            <span id="r_page_num">หน้า 1/1</span>
+            <button class="chip btn-chip" id="r_next">ถัดไป ›</button>
+          </div>
+        </div>
+
+        <div id="rlist" class="results"></div>
+      </div>
+    </div>`);
 
     let FIELDS = [], VENDORS = [];
     api('/admin/area-rules/fields').then((fs) => {
@@ -1406,6 +1447,10 @@ VIEWS.arearules = {
     const vendorName = (id) => (VENDORS.find((v) => v.id === id)?.display_name) || `#${id}`;
 
     let CURRENT_RULES = [];
+    let FILTER_TAB = 'all';
+    let SEARCH_QUERY = '';
+    let PAGE = 1;
+    const PAGE_SIZE = 50;
 
     function showDuplicateModal({ rule_field, match_value, new_vendor_id, existing, onReplace }) {
       const fieldTxt = fieldLabel(rule_field);
@@ -1448,14 +1493,61 @@ VIEWS.arearules = {
       $('#dup_cancel').onclick = closeModal;
     }
 
-    async function loadRules() {
-      const list = $('#rlist', w); list.innerHTML = 'กำลังโหลด…';
-      const rules = await api('/admin/area-rules');
-      CURRENT_RULES = rules || [];
-      list.innerHTML = rules.length ? '' : '<div class="empty">ยังไม่มี Rule</div>';
-      rules.forEach((r) => {
+    function renderRulesList() {
+      const list = $('#rlist', w);
+      const statusTxt = $('#r_status_txt', w);
+      const pager = $('#r_pager', w);
+
+      // นับยอดแต่ละกลุ่ม
+      const cntAll = CURRENT_RULES.length;
+      let cntSoldTo = 0, cntSoldToCode = 0, cntZone = 0;
+      for (const r of CURRENT_RULES) {
+        if (r.rule_field === 'sold_to') cntSoldTo++;
+        else if (r.rule_field === 'sold_to_code') cntSoldToCode++;
+        else if (r.rule_field === 'zone') cntZone++;
+      }
+      $('#cnt_all', w).textContent = cntAll.toLocaleString();
+      $('#cnt_sold_to', w).textContent = cntSoldTo.toLocaleString();
+      $('#cnt_sold_to_code', w).textContent = cntSoldToCode.toLocaleString();
+      $('#cnt_zone', w).textContent = cntZone.toLocaleString();
+
+      // กรองตาม Tab & Search
+      const q = SEARCH_QUERY.trim().toLowerCase();
+      const filtered = CURRENT_RULES.filter((r) => {
+        if (FILTER_TAB !== 'all' && r.rule_field !== FILTER_TAB) return false;
+        if (!q) return true;
+        const vName = vendorName(r.vendor_id).toLowerCase();
+        const fLabel = fieldLabel(r.rule_field).toLowerCase();
+        const mVal = String(r.match_value || '').toLowerCase();
+        const mValNoZero = mVal.replace(/^0+/, '');
+        return mVal.includes(q) || mValNoZero.includes(q) || vName.includes(q) || fLabel.includes(q);
+      });
+
+      const totalFiltered = filtered.length;
+      const totalPages = Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE));
+      if (PAGE > totalPages) PAGE = totalPages;
+      if (PAGE < 1) PAGE = 1;
+
+      const startIdx = (PAGE - 1) * PAGE_SIZE;
+      const pageItems = filtered.slice(startIdx, startIdx + PAGE_SIZE);
+
+      if (totalFiltered === 0) {
+        statusTxt.textContent = 'ไม่พบกติกาที่ค้นหา';
+        pager.style.display = 'none';
+        list.innerHTML = '<div class="empty">ไม่พบกติกาที่ตรงกับเงื่อนไข</div>';
+        return;
+      }
+
+      statusTxt.textContent = `แสดง ${startIdx + 1}–${Math.min(startIdx + PAGE_SIZE, totalFiltered)} จากทั้งหมด ${totalFiltered.toLocaleString()} กติกา`;
+      pager.style.display = totalPages > 1 ? 'flex' : 'none';
+      $('#r_page_num', w).textContent = `หน้า ${PAGE}/${totalPages}`;
+      $('#r_prev', w).disabled = PAGE <= 1;
+      $('#r_next', w).disabled = PAGE >= totalPages;
+
+      list.innerHTML = '';
+      pageItems.forEach((r) => {
         const c = el(`<div class="rg ${r.enabled ? '' : 'off'}">
-          <div class="no">#${r.priority} · ${esc(fieldLabel(r.rule_field))} = "${esc(r.match_value)}" → Vendor: ${esc(vendorName(r.vendor_id))}${r.area ? ` · พื้นที่ ${esc(r.area)}` : ''}</div>
+          <div class="no">#${r.priority} · ${esc(fieldLabel(r.rule_field))} = "<b>${esc(r.match_value)}</b>" → Vendor: <b>${esc(vendorName(r.vendor_id))}</b>${r.area ? ` · พื้นที่ ${esc(r.area)}` : ''}</div>
           <div class="meta">
             <button class="chip btn-chip" data-act="toggle">${r.enabled ? '✅ เปิดใช้' : '⬜ ปิดอยู่'}</button>
             <button class="chip btn-chip" data-act="edit">✏️ แก้ไข</button>
@@ -1480,8 +1572,9 @@ VIEWS.arearules = {
             if (!newVal) { mErr.textContent = 'กรุณากรอกค่าที่ต้องตรง'; return; }
             if (!newVId) { mErr.textContent = 'กรุณาเลือก Vendor'; return; }
 
+            const normCode = (s) => String(s ?? '').trim().toLowerCase().replace(/^0+/, '');
             const dupOther = CURRENT_RULES.find(
-              (o) => o.id !== r.id && o.rule_field === newField && String(o.match_value || '').trim().toLowerCase() === newVal.toLowerCase()
+              (o) => o.id !== r.id && o.rule_field === newField && normCode(o.match_value) === normCode(newVal)
             );
 
             const doUpdate = async (replace = false) => {
@@ -1532,15 +1625,58 @@ VIEWS.arearules = {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ enabled: !r.enabled }),
           });
-          loadRules();
+          r.enabled = !r.enabled;
+          renderRulesList();
         };
         c.querySelector('[data-act=del]').onclick = async () => {
+          if (!confirm(`ยืนยันลบกติกา ${fieldLabel(r.rule_field)} = "${r.match_value}"?`)) return;
           await api('/admin/area-rules/' + r.id, { method: 'DELETE' });
-          loadRules();
+          CURRENT_RULES = CURRENT_RULES.filter((x) => x.id !== r.id);
+          renderRulesList();
         };
         list.appendChild(c);
       });
     }
+
+    async function loadRules() {
+      const list = $('#rlist', w); list.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted)">กำลังโหลดกติกา…</div>';
+      try {
+        const rules = await api('/admin/area-rules');
+        CURRENT_RULES = rules || [];
+        PAGE = 1;
+        renderRulesList();
+      } catch (err) {
+        list.innerHTML = `<div class="err" style="padding:16px">โหลดกติกาไม่สำเร็จ: ${esc(err.message)}</div>`;
+      }
+    }
+
+    // Tab switcher
+    $('#r_filter_tabs', w).addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-tab]');
+      if (!btn) return;
+      $('#r_filter_tabs button', w).forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      FILTER_TAB = btn.dataset.tab;
+      PAGE = 1;
+      renderRulesList();
+    });
+
+    // Search input
+    let searchTimer = null;
+    $('#r_search', w).addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        SEARCH_QUERY = e.target.value;
+        PAGE = 1;
+        renderRulesList();
+      }, 250);
+    });
+
+    // Pagination controls
+    $('#r_prev', w).onclick = () => { if (PAGE > 1) { PAGE--; renderRulesList(); } };
+    $('#r_next', w).onclick = () => { PAGE++; renderRulesList(); };
+
+    // เพิ่ม Rule
     $('#r_add', w).onclick = async () => {
       const field = $('#r_field', w).value;
       const val = $('#r_val', w).value.trim();
@@ -1551,8 +1687,9 @@ VIEWS.arearules = {
       if (!val) { errBox.textContent = 'กรุณากรอกค่าที่ต้องตรง'; return; }
       if (!vId) { errBox.textContent = 'กรุณาเลือก Vendor'; return; }
 
+      const normCode = (s) => String(s ?? '').trim().toLowerCase().replace(/^0+/, '');
       const exist = CURRENT_RULES.find(
-        (r) => r.rule_field === field && String(r.match_value || '').trim().toLowerCase() === val.toLowerCase()
+        (r) => r.rule_field === field && normCode(r.match_value) === normCode(val)
       );
 
       const doSave = async (replace = false) => {
@@ -1597,13 +1734,68 @@ VIEWS.arearules = {
 
       await doSave(false);
     };
+
+    // ปุ่ม Re-assign
     $('#r_apply', w).onclick = async () => {
-      const out = $('#r_apply_out', w); out.textContent = 'กำลังคำนวณ…';
+      const out = $('#r_apply_out', w); out.textContent = 'กำลังคำนวณการมอบหมาย…';
       try {
         const r = await api('/admin/area-rules/apply', { method: 'POST' });
-        out.textContent = `Re-assign สำเร็จ ${r.assigned} รายการ · ยังไม่ตรงกติกา ${r.waiting} รายการ`;
-      } catch (e) { out.textContent = 'ผิดพลาด: ' + e.message; }
+        out.textContent = `✅ Re-assign สำเร็จ ${r.assigned} รายการ · ยังไม่ตรงกติกา ${r.waiting} รายการ`;
+      } catch (e) { out.textContent = '❌ ผิดพลาด: ' + e.message; }
     };
+
+    // ปุ่มนำเข้าจาก Excel
+    const fileInput = $('#r_file_input', w);
+    $('#r_import_btn', w).onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      if (!confirm(`ต้องการนำเข้าไฟล์ "${file.name}" เพื่อรีเซ็ตกติกาจัดพื้นที่ใหม่ทั้งหมดใช่หรือไม่?`)) {
+        fileInput.value = '';
+        return;
+      }
+      const out = $('#r_apply_out', w); out.textContent = `กำลังอัปโหลดและนำเข้าข้อมูลจาก "${file.name}"…`;
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const res = await fetch('/api/admin/area-rules/import-excel', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token() },
+          body: fd,
+        });
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.error || 'Import failed');
+        out.textContent = `✅ นำเข้ากติกาสำเร็จ ${r.finalCountInDb} รายการ (จากทั้งหมด ${r.totalRowsInExcel} แถวใน Excel)`;
+        toast(`นำเข้ากติกาสำเร็จ ${r.finalCountInDb} รายการ`);
+        loadRules();
+      } catch (err) {
+        out.textContent = '❌ นำเข้าไม่สำเร็จ: ' + err.message;
+        alert('เกิดข้อผิดพลาดในการนำเข้า: ' + err.message);
+      } finally {
+        fileInput.value = '';
+      }
+    };
+
+    // ปุ่มซิงค์จาก Rules Master.xlsx บนเซิร์ฟเวอร์
+    $('#r_sync_btn', w).onclick = async () => {
+      if (!confirm('ยืนยันล้างข้อมูลกติกาเก่าทั้งหมดและซิงค์ใหม่ตามไฟล์ Rules Master.xlsx บนเซิร์ฟเวอร์?')) return;
+      const out = $('#r_apply_out', w); out.textContent = 'กำลังซิงค์ข้อมูลตาม Rules Master.xlsx บนเซิร์ฟเวอร์…';
+      try {
+        const res = await fetch('/api/admin/area-rules/import-excel', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token() },
+        });
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.error || 'Sync failed');
+        out.textContent = `✅ ซิงค์สำเร็จ ${r.finalCountInDb} รายการตาม Rules Master.xlsx`;
+        toast(`ซิงค์กติกาสำเร็จ ${r.finalCountInDb} รายการ`);
+        loadRules();
+      } catch (err) {
+        out.textContent = '❌ ซิงค์ไม่สำเร็จ: ' + err.message;
+        alert('ซิงค์ไม่สำเร็จ: ' + err.message);
+      }
+    };
+
     loadRules();
     return w;
   },

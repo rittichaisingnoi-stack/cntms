@@ -2,7 +2,7 @@
 import xlsx from 'xlsx';
 import bcrypt from 'bcryptjs';
 import assert from 'node:assert';
-import { supabase } from './src/lib/supabase.js';
+import { supabase } from '../lib/supabase.js';
 
 const BASE = 'http://localhost:' + (process.env.TEST_PORT || 4712) + '/api';
 const RG1 = '999-2026-99001'; // ตรงกติกา → auto assign
