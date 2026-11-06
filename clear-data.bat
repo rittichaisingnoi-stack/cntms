@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0backend"
 
 echo ============================================================
-echo   NEO RG Document and Goods return Control - Clear order data (keep Users + Sessions)
+echo   WH RG Document and Goods return Control - Clear order data (keep Users + Sessions)
 echo ============================================================
 echo.
 echo   DELETE : orders, items, notes, tracking, area rules, vendors
